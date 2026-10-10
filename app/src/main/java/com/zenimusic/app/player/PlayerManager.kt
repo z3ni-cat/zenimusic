@@ -10,7 +10,6 @@ import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import com.zenimusic.app.data.model.Track
 import com.zenimusic.app.data.repo.MusicRepository
-import com.zenimusic.app.data.repo.SponsorBlock
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -62,9 +61,6 @@ object PlayerManager {
     var sleepFadeActive = false
         private set
 
-    // ============ SponsorBlock: segmen per videoId ============
-    private val sbSegments = mutableMapOf<String, List<SponsorBlock.Segment>>()
-
     // ============ Crossfade (transisi halus antar lagu, gratis) ============
     private var fadingOut = false
     private var fadeInJob: Job? = null
@@ -100,27 +96,7 @@ object PlayerManager {
         appContext = context.applicationContext
         repo = repository
         loadCrossfadePref()
-        loadSponsorBlockPref()
     }
-
-    // ============ SponsorBlock ============
-    private fun loadSponsorBlockPref() {
-        try {
-            SponsorBlock.enabled = appContext.getSharedPreferences("zeni_prefs", Context.MODE_PRIVATE)
-                .getBoolean("sponsorblock_enabled", true) // default nyala
-        } catch (e: Exception) { SponsorBlock.enabled = true }
-    }
-
-    /** Toggle SponsorBlock; tersimpan di prefs. */
-    var sponsorBlockEnabled: Boolean
-        get() = SponsorBlock.enabled
-        set(v) {
-            SponsorBlock.enabled = v
-            try {
-                appContext.getSharedPreferences("zeni_prefs", Context.MODE_PRIVATE)
-                    .edit().putBoolean("sponsorblock_enabled", v).apply()
-            } catch (e: Exception) { /* abaikan */ }
-        }
 
     // ============ Sleep timer ============
 
@@ -192,8 +168,6 @@ object PlayerManager {
                     }
                     // Crossfade: fade out halus saat lagu hampir selesai
                     applyCrossfadeOut(pl)
-                    // SponsorBlock: lewati segmen sponsor/intro/outro otomatis
-                    applySponsorSkip(pl)
                 }
             }
         }
@@ -230,36 +204,6 @@ object PlayerManager {
                 fadingOut = false
             }
         } catch (e: Exception) { /* abaikan */ }
-    }
-
-    /**
-     * Lewati segmen SponsorBlock (sponsor/intro/outro) secara otomatis.
-     * Dipanggil tiap 500ms dari loop posisi.
-     *
-     * Pengaman (pelajaran v3.1.1): data segmen komunitas kadang lebih panjang
-     * dari durasi audio, atau seek beruntun mengganggu buffering — keduanya
-     * bisa membuat lagu "berhenti" tiba-tiba. Maka: hanya skip saat player
-     * benar-benar READY, maksimal 1x per 2 detik, dan tidak pernah skip bila
-     * target melewati / terlalu dekat akhir lagu.
-     */
-    private var lastSbSeekAt = 0L
-
-    private fun applySponsorSkip(pl: ExoPlayer) {
-        if (!SponsorBlock.enabled || !pl.isPlaying) return
-        if (pl.playbackState != Player.STATE_READY) return
-        try {
-            val vid = _uiState.value.current?.videoId ?: return
-            val segs = sbSegments[vid] ?: return
-            if (segs.isEmpty()) return
-            val dur = pl.duration
-            if (dur <= 0) return
-            val now = android.os.SystemClock.elapsedRealtime()
-            if (now - lastSbSeekAt < 2000) return
-            val target = SponsorBlock.skipTarget(segs, pl.currentPosition) ?: return
-            if (target >= dur - 1500) return
-            lastSbSeekAt = now
-            pl.seekTo(target)
-        } catch (_: Exception) { /* abaikan */ }
     }
 
     /**
@@ -519,12 +463,6 @@ object PlayerManager {
                 fadeInNewTrack(pl)
                 launch(Dispatchers.IO) { repo.recordHistory(track.videoId) }
                 update { copy(loading = false) }
-                // SponsorBlock: ambil segmen di background (tidak blokir playback)
-                if (SponsorBlock.enabled && !sbSegments.containsKey(track.videoId)) {
-                    launch(Dispatchers.IO) {
-                        sbSegments[track.videoId] = SponsorBlock.segments(track.videoId)
-                    }
-                }
                 // Prefetch proaktif: jaga antrian tetap terisi lagu baru yang se-genre
                 // agar radio tidak pernah kehabisan (tidak muter-muter di hasil pencarian saja).
                 prefetchRelatedIfNeeded(track)

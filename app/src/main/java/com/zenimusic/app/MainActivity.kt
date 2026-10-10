@@ -133,9 +133,6 @@ class MainActivity : Activity() {
     private lateinit var discoveryWrap: LinearLayout
     private var discoveryVisible = true
 
-    // ---- Zeni pane ----
-    private lateinit var tvSponsorBlock: TextView
-
     // ---- Daylist ----
     private lateinit var daylistCard: LinearLayout
     private lateinit var tvDaylistTitle: TextView
@@ -402,28 +399,6 @@ class MainActivity : Activity() {
         cfRow.addView(cfSpinner,
             LinearLayout.LayoutParams(dp(110), ViewGroup.LayoutParams.WRAP_CONTENT))
         setCard.addView(cfRow, matchWrap())
-
-        // Baris SponsorBlock: lewati sponsor/intro/outro otomatis
-        val sbRow = hrow {
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, dp(12), 0, 0)
-            pressedFeedback()
-        }
-        sbRow.addView(iconAction(ZeniIcons.Kind.NEXT, ACCENT1, 40, 8))
-        val sbCol = vcol { setPadding(dp(12), 0, dp(8), 0) }
-        sbCol.addView(textView("SponsorBlock", 14f, TEXT, bold = true), matchWrap())
-        tvSponsorBlock = textView("", 12f, TEXT2)
-        sbCol.addView(tvSponsorBlock, matchWrap())
-        sbRow.add(sbCol, 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-        sbRow.setOnClickListener {
-            PlayerManager.sponsorBlockEnabled = !PlayerManager.sponsorBlockEnabled
-            refreshSponsorBlockLabel()
-            Toast.makeText(this@MainActivity,
-                if (PlayerManager.sponsorBlockEnabled) "SponsorBlock nyala"
-                else "SponsorBlock mati", Toast.LENGTH_SHORT).show()
-        }
-        setCard.addView(sbRow, matchWrap())
-        refreshSponsorBlockLabel()
         col.addView(setCard, matchWrap().apply { bottomMargin = dp(12) })
 
         // Menu WhatsApp
@@ -501,14 +476,6 @@ class MainActivity : Activity() {
         } catch (_: Exception) {
             Toast.makeText(this, "Tidak bisa membuka tautan", Toast.LENGTH_SHORT).show()
         }
-    }
-
-    private fun refreshSponsorBlockLabel() {
-        if (!::tvSponsorBlock.isInitialized) return
-        tvSponsorBlock.text = if (PlayerManager.sponsorBlockEnabled)
-            "Lewati sponsor/intro/outro otomatis • Nyala"
-        else
-            "Lewati sponsor/intro/outro otomatis • Mati"
     }
 
     // ================= Update versi (GitHub Releases) =================

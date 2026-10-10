@@ -48,7 +48,7 @@ data class HistoryEntity(
 // ---- Database ----
 
 class ZeniDb(context: Context) :
-    SQLiteOpenHelper(context.applicationContext, "zenimusic.db", null, 1) {
+    SQLiteOpenHelper(context.applicationContext, "zenimusic.db", null, 2) {
 
     private val refresh = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
 
@@ -86,15 +86,22 @@ class ZeniDb(context: Context) :
                 videoId TEXT NOT NULL,
                 playedAt INTEGER NOT NULL)"""
         )
+        db.execSQL(
+            """CREATE TABLE lyric_translations (
+                videoId TEXT PRIMARY KEY,
+                translated TEXT NOT NULL)"""
+        )
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        db.execSQL("DROP TABLE IF EXISTS songs")
-        db.execSQL("DROP TABLE IF EXISTS playlists")
-        db.execSQL("DROP TABLE IF EXISTS playlist_songs")
-        db.execSQL("DROP TABLE IF EXISTS favorites")
-        db.execSQL("DROP TABLE IF EXISTS history")
-        onCreate(db)
+        // Migrasi non-destruktif: JANGAN drop tabel user (riwayat, playlist, favorit).
+        if (oldVersion < 2) {
+            db.execSQL(
+                """CREATE TABLE IF NOT EXISTS lyric_translations (
+                    videoId TEXT PRIMARY KEY,
+                    translated TEXT NOT NULL)"""
+            )
+        }
     }
 
     private fun ping() {
@@ -313,6 +320,39 @@ class ZeniDb(context: Context) :
             }
         }
         out
+    }
+
+    /** Lagu paling sering diputar sejak [sinceMs], untuk Quick Picks. */
+    suspend fun topPlayed(sinceMs: Long, limit: Int): List<SongEntity> =
+        withContext(Dispatchers.IO) {
+            querySongs(
+                readableDatabase,
+                """SELECT s.* FROM songs s INNER JOIN
+                   (SELECT videoId, COUNT(*) AS c FROM history
+                    WHERE playedAt >= ? GROUP BY videoId) h
+                   ON s.videoId = h.videoId ORDER BY h.c DESC LIMIT ?""",
+                arrayOf(sinceMs.toString(), limit.toString())
+            )
+        }
+
+    // ---- Lyric translations (cache permanen per lagu) ----
+    suspend fun getTranslation(videoId: String): String? = withContext(Dispatchers.IO) {
+        readableDatabase.rawQuery(
+            "SELECT translated FROM lyric_translations WHERE videoId = ?",
+            arrayOf(videoId)
+        ).use { c ->
+            if (c.moveToFirst()) c.getString(0) else null
+        }
+    }
+
+    suspend fun saveTranslation(videoId: String, text: String) = withContext(Dispatchers.IO) {
+        val cv = ContentValues().apply {
+            put("videoId", videoId)
+            put("translated", text)
+        }
+        writableDatabase.insertWithOnConflict(
+            "lyric_translations", null, cv, SQLiteDatabase.CONFLICT_REPLACE
+        )
     }
 
     // ---- Downloaded ----

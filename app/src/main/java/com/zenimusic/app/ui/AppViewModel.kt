@@ -146,4 +146,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             _downloadingIds.value = _downloadingIds.value - track.videoId
         }
     }
+
+    // ---- Quick Picks & terjemahan lirik ----
+    suspend fun topPlayed(sinceMs: Long, limit: Int = 10): List<Track> =
+        repo.topPlayed(sinceMs, limit)
+
+    suspend fun getTranslation(videoId: String): String? = repo.getTranslation(videoId)
+    suspend fun saveTranslation(videoId: String, text: String) =
+        repo.saveTranslation(videoId, text)
 }

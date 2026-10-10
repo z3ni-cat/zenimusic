@@ -38,6 +38,8 @@ import com.zenimusic.app.data.repo.DaylistSlot
 import com.zenimusic.app.data.repo.PODCAST_EN
 import com.zenimusic.app.data.repo.PODCAST_ID
 import com.zenimusic.app.data.repo.PodcastChannel
+import com.zenimusic.app.data.repo.TelegramSender
+import com.zenimusic.app.data.repo.UpdateChecker
 import com.zenimusic.app.data.repo.WrappedStats
 import android.graphics.drawable.GradientDrawable
 import com.zenimusic.app.player.PlayerManager
@@ -123,6 +125,13 @@ class MainActivity : Activity() {
     private lateinit var tvSearchError: TextView
     private lateinit var searchAdapter: TrackAdapter
 
+    // ---- Quick Picks ----
+    private lateinit var qpRow: LinearLayout
+    private var qpJob: Job? = null
+
+    // ---- Zeni pane ----
+    private lateinit var tvSponsorBlock: TextView
+
     // ---- Daylist ----
     private lateinit var daylistCard: LinearLayout
     private lateinit var tvDaylistTitle: TextView
@@ -187,6 +196,8 @@ class MainActivity : Activity() {
         buildUi()
         collectFlows()
         ensureNotifPermission()
+        // Cek update versi diam-diam (sekali per sesi buka aplikasi)
+        checkForUpdate(auto = true)
     }
 
     // ================= UI =================
@@ -387,6 +398,28 @@ class MainActivity : Activity() {
         cfRow.addView(cfSpinner,
             LinearLayout.LayoutParams(dp(110), ViewGroup.LayoutParams.WRAP_CONTENT))
         setCard.addView(cfRow, matchWrap())
+
+        // Baris SponsorBlock: lewati sponsor/intro/outro otomatis
+        val sbRow = hrow {
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dp(12), 0, 0)
+            pressedFeedback()
+        }
+        sbRow.addView(iconAction(ZeniIcons.Kind.NEXT, ACCENT1, 40, 8))
+        val sbCol = vcol { setPadding(dp(12), 0, dp(8), 0) }
+        sbCol.addView(textView("SponsorBlock", 14f, TEXT, bold = true), matchWrap())
+        tvSponsorBlock = textView("", 12f, TEXT2)
+        sbCol.addView(tvSponsorBlock, matchWrap())
+        sbRow.add(sbCol, 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        sbRow.setOnClickListener {
+            PlayerManager.sponsorBlockEnabled = !PlayerManager.sponsorBlockEnabled
+            refreshSponsorBlockLabel()
+            Toast.makeText(this@MainActivity,
+                if (PlayerManager.sponsorBlockEnabled) "SponsorBlock nyala"
+                else "SponsorBlock mati", Toast.LENGTH_SHORT).show()
+        }
+        setCard.addView(sbRow, matchWrap())
+        refreshSponsorBlockLabel()
         col.addView(setCard, matchWrap().apply { bottomMargin = dp(12) })
 
         // Menu WhatsApp
@@ -403,7 +436,39 @@ class MainActivity : Activity() {
         waRow.add(waCol, 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         waRow.addView(iconAction(ZeniIcons.Kind.CHEVRON_RIGHT, TEXT2, 28, 6))
         waRow.setOnClickListener { openWhatsApp() }
-        col.addView(waRow, matchWrap())
+        col.addView(waRow, matchWrap().apply { bottomMargin = dp(12) })
+
+        // Menu Request Fitur → kirim ke bot Telegram
+        val rqRow = hrow {
+            background = cardBg()
+            setPadding(dp(16), dp(14), dp(16), dp(14))
+            gravity = Gravity.CENTER_VERTICAL
+            pressedFeedback()
+        }
+        rqRow.addView(iconAction(ZeniIcons.Kind.CHAT, ACCENT1, 40, 8))
+        val rqCol = vcol { setPadding(dp(12), 0, dp(8), 0) }
+        rqCol.addView(textView("Request Fitur", 15f, TEXT, bold = true), matchWrap())
+        rqCol.addView(textView("Punya ide? Kirim langsung ke developer", 12f, TEXT2), matchWrap())
+        rqRow.add(rqCol, 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        rqRow.addView(iconAction(ZeniIcons.Kind.CHEVRON_RIGHT, TEXT2, 28, 6))
+        rqRow.setOnClickListener { showRequestDialog() }
+        col.addView(rqRow, matchWrap().apply { bottomMargin = dp(12) })
+
+        // Menu Periksa Update (cek manual)
+        val upRow = hrow {
+            background = cardBg()
+            setPadding(dp(16), dp(14), dp(16), dp(14))
+            gravity = Gravity.CENTER_VERTICAL
+            pressedFeedback()
+        }
+        upRow.addView(iconAction(ZeniIcons.Kind.DOWNLOAD, ACCENT1, 40, 8))
+        val upCol = vcol { setPadding(dp(12), 0, dp(8), 0) }
+        upCol.addView(textView("Periksa Update", 15f, TEXT, bold = true), matchWrap())
+        upCol.addView(textView("Cek versi terbaru ZeniMusic", 12f, TEXT2), matchWrap())
+        upRow.add(upCol, 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        upRow.addView(iconAction(ZeniIcons.Kind.CHEVRON_RIGHT, TEXT2, 28, 6))
+        upRow.setOnClickListener { checkForUpdate(auto = false) }
+        col.addView(upRow, matchWrap())
 
         val scroll = ScrollView(this@MainActivity)
         scroll.addView(col, ViewGroup.LayoutParams(
@@ -424,6 +489,273 @@ class MainActivity : Activity() {
         } catch (_: Exception) {
             Toast.makeText(this, "Tidak bisa membuka WhatsApp", Toast.LENGTH_SHORT).show()
         }
+    }
+
+    private fun openUrl(url: String) {
+        try {
+            startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url)))
+        } catch (_: Exception) {
+            Toast.makeText(this, "Tidak bisa membuka tautan", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun refreshSponsorBlockLabel() {
+        if (!::tvSponsorBlock.isInitialized) return
+        tvSponsorBlock.text = if (PlayerManager.sponsorBlockEnabled)
+            "Lewati sponsor/intro/outro otomatis • Nyala"
+        else
+            "Lewati sponsor/intro/outro otomatis • Mati"
+    }
+
+    // ================= Update versi (GitHub Releases) =================
+
+    private fun todayId(): Long = System.currentTimeMillis() / 86_400_000L
+
+    private fun updateDismissedToday(version: String): Boolean {
+        val p = getSharedPreferences("zeni_prefs", MODE_PRIVATE)
+        return p.getString("update_dismissed_ver", "") == version &&
+            p.getLong("update_dismissed_day", -1) == todayId()
+    }
+
+    private fun markUpdateDismissed(version: String) {
+        getSharedPreferences("zeni_prefs", MODE_PRIVATE).edit()
+            .putString("update_dismissed_ver", version)
+            .putLong("update_dismissed_day", todayId())
+            .apply()
+    }
+
+    /**
+     * Cek update ke GitHub Releases.
+     * auto=true: diam saja bila tidak ada update / gagal / sudah pilih "Nanti" hari ini.
+     */
+    private fun checkForUpdate(auto: Boolean) {
+        uiScope.launch {
+            val info = try { UpdateChecker.checkLatest() } catch (_: Exception) { null }
+            if (info == null) {
+                if (!auto) Toast.makeText(this@MainActivity,
+                    "Gagal memeriksa update. Periksa koneksi.", Toast.LENGTH_SHORT).show()
+                return@launch
+            }
+            if (!UpdateChecker.isNewer(info.versionName, appVersionName())) {
+                if (!auto) Toast.makeText(this@MainActivity,
+                    "Kamu sudah pakai versi terbaru.", Toast.LENGTH_SHORT).show()
+                return@launch
+            }
+            if (auto && updateDismissedToday(info.versionName)) return@launch
+            showUpdateDialog(info)
+        }
+    }
+
+    private fun showUpdateDialog(info: UpdateChecker.UpdateInfo) = with(UiKit) {
+        val col = vcol { setPadding(dp(20), dp(20), dp(20), dp(4)) }
+        col.addView(textView("Ada update versi ${info.versionName}", 17f, TEXT, bold = true).apply {
+            setPadding(0, 0, 0, dp(4))
+        }, matchWrap())
+        col.addView(textView("Yang baru di versi ini:", 13f, TEXT2).apply {
+            setPadding(0, 0, 0, dp(8))
+        }, matchWrap())
+        val tvLog = textView(
+            info.changelog.ifBlank { "Perbaikan dan peningkatan." }, 13f, TEXT2)
+        val sv = ScrollView(this@MainActivity)
+        sv.addView(tvLog, ViewGroup.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        col.addView(sv, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, dp(200)))
+        val btnRow = hrow {
+            gravity = Gravity.END
+            setPadding(0, dp(16), 0, dp(12))
+        }
+        val btnLater = button("Nanti", 14f)
+        val btnUpdate = accentPillButton("Update", 14f).apply {
+            setPadding(dp(28), dp(10), dp(28), dp(10))
+        }
+        btnRow.addView(btnLater)
+        btnRow.addView(View(this@MainActivity), dp(12), dp(1))
+        btnRow.addView(btnUpdate)
+        col.addView(btnRow, matchWrap())
+        val dlg = AlertDialog.Builder(this@MainActivity).setView(col).create()
+        btnLater.setOnClickListener {
+            markUpdateDismissed(info.versionName)
+            dlg.dismiss()
+        }
+        btnUpdate.setOnClickListener {
+            dlg.dismiss()
+            val apkUrl = info.apkUrl
+            if (apkUrl.isNullOrEmpty()) openUrl(info.pageUrl)
+            else showDownloadDialog(apkUrl, info.pageUrl)
+        }
+        dlg.show()
+        dlg.styleAsCard()
+    }
+
+    private fun showDownloadDialog(apkUrl: String, fallbackUrl: String) = with(UiKit) {
+        val col = vcol { setPadding(dp(20), dp(20), dp(20), dp(12)) }
+        col.addView(textView("Mengunduh update…", 15f, TEXT, bold = true).apply {
+            setPadding(0, 0, 0, dp(12))
+        }, matchWrap())
+        val pb = ProgressBar(this@MainActivity, null,
+            android.R.attr.progressBarStyleHorizontal).apply { max = 100 }
+        col.addView(pb, matchWrap())
+        val tvPct = textView("0%", 13f, TEXT2).apply {
+            gravity = Gravity.CENTER
+            setPadding(0, dp(8), 0, 0)
+        }
+        col.addView(tvPct, matchWrap())
+        val dlg = AlertDialog.Builder(this@MainActivity).setView(col)
+            .setCancelable(false).create()
+        dlg.show()
+        dlg.styleAsCard()
+        uiScope.launch {
+            val ok = try {
+                UpdateChecker.downloadAndInstall(this@MainActivity, apkUrl) { p ->
+                    pb.progress = p
+                    tvPct.text = "$p%"
+                }
+            } catch (_: Exception) { false }
+            dlg.dismiss()
+            if (!ok) {
+                Toast.makeText(this@MainActivity,
+                    "Unduhan gagal. Membuka halaman update…", Toast.LENGTH_LONG).show()
+                openUrl(fallbackUrl)
+            }
+        }
+    }
+
+    // ================= Request Fitur (Telegram) =================
+
+    private fun showRequestDialog() = with(UiKit) {
+        if (!TelegramSender.isConfigured()) {
+            Toast.makeText(this@MainActivity,
+                "Fitur request belum dikonfigurasi.", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val col = vcol { setPadding(dp(20), dp(20), dp(20), dp(4)) }
+        col.addView(textView("Request Fitur", 17f, TEXT, bold = true).apply {
+            setPadding(0, 0, 0, dp(4))
+        }, matchWrap())
+        col.addView(textView("Ceritakan ide atau masalahmu, langsung terkirim ke developer.",
+            13f, TEXT2).apply {
+            setPadding(0, 0, 0, dp(12))
+        }, matchWrap())
+        val etTitle = EditText(this@MainActivity).apply {
+            hint = "Judul, mis: Sleep timer per lagu"
+            setHintTextColor(TEXT2)
+            setTextColor(TEXT)
+            background = roundedBg(SURFACE2, dp(10).toFloat())
+            setPadding(dp(14), dp(10), dp(14), dp(10))
+            maxLines = 1
+            inputType = InputType.TYPE_CLASS_TEXT
+            textSize = 14f
+        }
+        col.addView(etTitle, matchWrap().apply { bottomMargin = dp(10) })
+        val cats = listOf("Fitur Baru", "Laporan Bug", "Lainnya")
+        val spCat = Spinner(this@MainActivity).apply {
+            adapter = ArrayAdapter(this@MainActivity,
+                android.R.layout.simple_spinner_dropdown_item, cats)
+        }
+        col.addView(spCat, matchWrap().apply { bottomMargin = dp(10) })
+        val etDesc = EditText(this@MainActivity).apply {
+            hint = "Deskripsi…"
+            setHintTextColor(TEXT2)
+            setTextColor(TEXT)
+            background = roundedBg(SURFACE2, dp(10).toFloat())
+            setPadding(dp(14), dp(10), dp(14), dp(10))
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
+            minLines = 3
+            gravity = Gravity.TOP
+            textSize = 14f
+        }
+        col.addView(etDesc, matchWrap())
+        val btnRow = hrow {
+            gravity = Gravity.END
+            setPadding(0, dp(16), 0, dp(12))
+        }
+        val btnCancel = button("Batal", 14f)
+        val btnSend = accentPillButton("Kirim", 14f).apply {
+            setPadding(dp(28), dp(10), dp(28), dp(10))
+        }
+        btnRow.addView(btnCancel)
+        btnRow.addView(View(this@MainActivity), dp(12), dp(1))
+        btnRow.addView(btnSend)
+        col.addView(btnRow, matchWrap())
+        val dlg = AlertDialog.Builder(this@MainActivity).setView(col).create()
+        btnCancel.setOnClickListener { dlg.dismiss() }
+        btnSend.setOnClickListener {
+            val title = etTitle.text.toString().trim()
+            val desc = etDesc.text.toString().trim()
+            if (title.isEmpty() || desc.isEmpty()) {
+                Toast.makeText(this@MainActivity,
+                    "Isi judul dan deskripsi dulu.", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+            val cat = cats[spCat.selectedItemPosition.coerceIn(cats.indices)]
+            btnSend.isEnabled = false
+            uiScope.launch {
+                val ok = try {
+                    TelegramSender.sendRequest(title, cat, desc, appVersionName())
+                } catch (_: Exception) { false }
+                dlg.dismiss()
+                Toast.makeText(this@MainActivity,
+                    if (ok) "Terkirim! Makasih masukannya."
+                    else "Gagal terkirim. Coba lagi nanti.",
+                    Toast.LENGTH_LONG).show()
+            }
+        }
+        dlg.show()
+        dlg.styleAsCard()
+    }
+
+    // ================= Quick Picks =================
+
+    private fun loadQuickPicks() {
+        qpJob?.cancel()
+        qpJob = uiScope.launch {
+            try {
+                val since = System.currentTimeMillis() - 30L * 24 * 60 * 60 * 1000
+                val tracks = vm.topPlayed(since, 10)
+                if (!::qpRow.isInitialized) return@launch
+                qpRow.removeAllViews()
+                if (tracks.isEmpty()) {
+                    qpRow.addView(with(UiKit) {
+                        textView("Dengarkan beberapa lagu dulu, nanti muncul di sini.",
+                            13f, TEXT2).apply { setPadding(dp(4), dp(8), dp(4), dp(8)) }
+                    })
+                    return@launch
+                }
+                for (t in tracks) qpRow.addView(quickPickCard(t, tracks))
+            } catch (_: Exception) { /* abaikan */ }
+        }
+    }
+
+    private fun quickPickCard(t: Track, queue: List<Track>): LinearLayout = with(UiKit) {
+        val card = vcol {
+            background = cardBg()
+            setPadding(dp(8), dp(8), dp(8), dp(8))
+            pressedFeedback()
+            isClickable = true
+            isFocusable = true
+        }
+        val iv = ImageView(this@MainActivity).apply {
+            scaleType = ImageView.ScaleType.CENTER_CROP
+            roundedCorners(10)
+        }
+        ImageLoader.load(t.thumbnailUrl, iv)
+        card.addView(iv, LinearLayout.LayoutParams(dp(104), dp(104)))
+        card.addView(textView(t.title, 12f, TEXT, bold = true).apply {
+            maxLines = 2
+            ellipsize = TextUtils.TruncateAt.END
+            setPadding(0, dp(6), 0, 0)
+        }, LinearLayout.LayoutParams(dp(104), ViewGroup.LayoutParams.WRAP_CONTENT))
+        card.addView(textView(t.channel, 11f, TEXT2).apply {
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.END
+        }, LinearLayout.LayoutParams(dp(104), ViewGroup.LayoutParams.WRAP_CONTENT))
+        card.setOnClickListener { vm.play(t, queue) }
+        card.layoutParams = LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply { rightMargin = dp(10) }
+        return card
     }
 
     // ================= Halaman Home (search) =================
@@ -461,6 +793,21 @@ class MainActivity : Activity() {
         searchCard.addView(btnSearch)
         searchWrap.addView(searchCard, matchWrap())
         pane.addView(searchWrap, matchWrap())
+
+        // ---- Quick Picks: rekomendasi dari riwayat dengar ----
+        val qpWrap = vcol { setPadding(dp(12), dp(4), dp(12), dp(4)) }
+        qpWrap.addView(textView("Pilihan Buatmu", 15f, TEXT, bold = true).apply {
+            setPadding(dp(4), dp(4), dp(4), dp(8))
+        }, matchWrap())
+        val qpScroll = HorizontalScrollView(this@MainActivity).apply {
+            isHorizontalScrollBarEnabled = false
+        }
+        qpRow = hrow {}
+        qpScroll.addView(qpRow, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        qpWrap.addView(qpScroll, matchWrap())
+        pane.addView(qpWrap, matchWrap())
+        loadQuickPicks()
 
         // ---- Zeni Wrapped: statistik dengerin ala Spotify Wrapped ----
         val wrappedWrap = vcol { setPadding(dp(12), dp(4), dp(12), dp(4)) }

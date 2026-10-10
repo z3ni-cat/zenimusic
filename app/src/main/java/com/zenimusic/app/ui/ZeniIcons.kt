@@ -21,7 +21,7 @@ object ZeniIcons {
         DOWNLOAD, PLUS, CLOSE, TRASH,
         SEARCH, HOME, PLAYLIST, INFO, CHAT,
         CHEVRON_RIGHT, CHEVRON_LEFT,
-        SHUFFLE, REPEAT, LYRICS, QUEUE, EQ
+        SHUFFLE, REPEAT, LYRICS, QUEUE, EQ, TIMER
     }
 
     private const val S = 96f
@@ -203,6 +203,14 @@ object ZeniIcons {
                     c.drawLine(xs[i], 24f, xs[i], 72f, stroke)
                     c.drawCircle(xs[i], knobs[i], 7f, fillRound)
                 }
+            }
+            Kind.TIMER -> {
+                // Jam/sleep timer: lingkaran + jarum jam.
+                c.drawCircle(48f, 50f, 22f, stroke)
+                c.drawLine(48f, 26f, 48f, 32f, stroke)
+                c.drawLine(48f, 50f, 48f, 36f, stroke)
+                c.drawLine(48f, 50f, 60f, 56f, stroke)
+                c.drawCircle(48f, 50f, 3.5f, fill)
             }
         }
         return BitmapDrawable(ctx.resources, bmp)

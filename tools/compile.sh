@@ -22,6 +22,21 @@ done
 
 mkdir -p "$BUILD/classes-app"
 SOURCES=$(find "$PROJ/app/src/main/java" -name "*.kt" | sort)
+
+# Secrets.kt tidak di-commit (gitignored): generate stub kosong bila belum ada
+# agar fresh clone tetap bisa compile. Nilai asli hanya ada di mesin build.
+if [ ! -f "$PROJ/app/src/main/java/com/zenimusic/app/Secrets.kt" ]; then
+  mkdir -p "$BUILD/gen"
+  cat > "$BUILD/gen/Secrets.kt" <<'EOF'
+package com.zenimusic.app
+object Secrets {
+    const val TG_BOT_TOKEN = ""
+    const val TG_CHAT_ID = ""
+}
+EOF
+  SOURCES="$SOURCES $BUILD/gen/Secrets.kt"
+  echo "note: Secrets.kt stub generated (empty)"
+fi
 echo "sources: $(echo "$SOURCES" | wc -l) files"
 echo "classpath entries: $(echo "$APP_CP" | tr ':' '\n' | wc -l)"
 

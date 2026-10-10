@@ -196,4 +196,11 @@ class MusicRepository(
     fun downloaded(): Flow<List<Track>> = dao.downloaded().map { it.map { e -> e.toTrack() } }
     fun playlistSongs(pid: Long): Flow<List<Track>> = dao.playlistSongs(pid).map { it.map { e -> e.toTrack() } }
     suspend fun playlistSongList(pid: Long): List<Track> = dao.playlistSongList(pid).map { it.toTrack() }
+
+    // ---- Quick Picks & terjemahan lirik ----
+    suspend fun topPlayed(sinceMs: Long, limit: Int = 10): List<Track> =
+        dao.topPlayed(sinceMs, limit).map { it.toTrack() }
+
+    suspend fun getTranslation(videoId: String): String? = dao.getTranslation(videoId)
+    suspend fun saveTranslation(videoId: String, text: String) = dao.saveTranslation(videoId, text)
 }

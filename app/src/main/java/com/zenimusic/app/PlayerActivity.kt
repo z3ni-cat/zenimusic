@@ -1,6 +1,7 @@
 package com.zenimusic.app
 
 import android.app.Activity
+import android.app.AlertDialog
 import android.os.Bundle
 import android.text.TextUtils
 import android.view.Gravity
@@ -18,7 +19,9 @@ import com.zenimusic.app.data.model.Track
 import com.zenimusic.app.data.model.formatDurationMs
 import com.zenimusic.app.data.repo.LyricLine
 import com.zenimusic.app.data.repo.LyricsRepository
+import com.zenimusic.app.data.repo.Translator
 import com.zenimusic.app.player.PlayerManager
+import com.zenimusic.app.player.SleepTimer
 import com.zenimusic.app.ui.AppViewModel
 import com.zenimusic.app.ui.ImageLoader
 import com.zenimusic.app.ui.UiKit
@@ -28,12 +31,14 @@ import com.zenimusic.app.ui.UiKit.FAV
 import com.zenimusic.app.ui.UiKit.SURFACE2
 import com.zenimusic.app.ui.UiKit.TEXT
 import com.zenimusic.app.ui.UiKit.TEXT2
+import com.zenimusic.app.ui.UiKit.WHITE
 import com.zenimusic.app.ui.UiKit.accentCircleIconButton
 import com.zenimusic.app.ui.UiKit.circleIconButton
 import com.zenimusic.app.ui.UiKit.dp
 import com.zenimusic.app.ui.UiKit.hrow
 import com.zenimusic.app.ui.UiKit.iconAction
 import com.zenimusic.app.ui.UiKit.matchWrap
+import com.zenimusic.app.ui.UiKit.roundedBg
 import com.zenimusic.app.ui.UiKit.roundedCorners
 import com.zenimusic.app.ui.UiKit.setZeniIcon
 import com.zenimusic.app.ui.UiKit.styleSeekBar
@@ -68,6 +73,7 @@ class PlayerActivity : Activity() {
     private lateinit var btnFav: ImageView
     private lateinit var btnDl: ImageView
     private lateinit var btnLyrics: ImageView
+    private lateinit var btnSleep: ImageView
 
     // Overlay lirik ala Apple Music
     private lateinit var lyricsOverlay: FrameLayout
@@ -75,8 +81,13 @@ class PlayerActivity : Activity() {
     private lateinit var lyricsBox: LinearLayout
     private lateinit var tvLyricsTitle: TextView
     private lateinit var tvLyricsStatus: TextView
+    private lateinit var btnTranslate: TextView
     private var lyricLines: List<LyricLine> = emptyList()
     private var lyricViews: List<TextView> = emptyList()
+    private var lyricTransViews: List<TextView> = emptyList()
+    private var lyricVideoId: String? = null
+    private var translateOn = false
+    private var translateJob: Job? = null
     private var lyricIndex = -1
     private var lyricsJob: Job? = null
     private var lyricsSync: Runnable? = null
@@ -149,6 +160,54 @@ class PlayerActivity : Activity() {
                 btnDl.alpha = if (cur != null && ids.contains(cur.videoId)) 0.4f else 1f
             }
         }
+        uiScope.launch {
+            SleepTimer.state.collect { refreshSleepIcon() }
+        }
+    }
+
+    private fun refreshSleepIcon() {
+        if (!::btnSleep.isInitialized) return
+        updateToggle(btnSleep, SleepTimer.isActive, ZeniIcons.Kind.TIMER)
+    }
+
+    /** Dialog sleep timer: per menit atau per jumlah lagu, dengan fade-out. */
+    private fun showSleepDialog() = with(UiKit) {
+        val col = vcol { setPadding(dp(20), dp(20), dp(20), dp(8)) }
+        col.addView(textView("Sleep Timer", 17f, TEXT, bold = true).apply {
+            setPadding(0, 0, 0, dp(4))
+        }, matchWrap())
+        col.addView(textView("Status: ${SleepTimer.statusText()}", 13f, TEXT2).apply {
+            setPadding(0, 0, 0, dp(12))
+        }, matchWrap())
+
+        val dlg = AlertDialog.Builder(this@PlayerActivity).setView(col).create()
+        fun option(label: String, action: () -> Unit) {
+            val tv = textView(label, 15f, TEXT).apply {
+                setPadding(dp(8), dp(12), dp(8), dp(12))
+                isClickable = true
+                isFocusable = true
+                pressedFeedback()
+            }
+            tv.setOnClickListener {
+                action()
+                refreshSleepIcon()
+                dlg.dismiss()
+            }
+            col.addView(tv, matchWrap())
+        }
+        if (SleepTimer.isActive) option("Matikan timer") { SleepTimer.cancel() }
+        option("15 menit") { SleepTimer.startMinutes(15) }
+        option("30 menit") { SleepTimer.startMinutes(30) }
+        option("45 menit") { SleepTimer.startMinutes(45) }
+        option("60 menit") { SleepTimer.startMinutes(60) }
+        option("90 menit") { SleepTimer.startMinutes(90) }
+        option("Setelah 1 lagu") { SleepTimer.startSongs(1) }
+        option("Setelah 2 lagu") { SleepTimer.startSongs(2) }
+        option("Setelah 3 lagu") { SleepTimer.startSongs(3) }
+        option("Setelah 5 lagu") { SleepTimer.startSongs(5) }
+        col.addView(View(this@PlayerActivity), matchWrap().apply { topMargin = dp(8) })
+        dlg.show()
+        dlg.styleAsCard()
     }
 
     private fun watchFavorite(videoId: String) {
@@ -288,6 +347,14 @@ class PlayerActivity : Activity() {
         optRow.addView(View(this@PlayerActivity).apply { visibility = View.INVISIBLE },
             LinearLayout.LayoutParams(dp(10), dp(1)))
         optRow.addView(btnEq)
+        optRow.addView(View(this@PlayerActivity).apply { visibility = View.INVISIBLE },
+            LinearLayout.LayoutParams(dp(10), dp(1)))
+        btnSleep = circleIconButton(ZeniIcons.Kind.TIMER, TEXT2, 48)
+        btnSleep.setOnClickListener {
+            with(UiKit) { btnSleep.pop() }
+            showSleepDialog()
+        }
+        optRow.addView(btnSleep)
         playerUi.addView(optRow, matchWrap())
 
         buildLyricsOverlay()
@@ -330,6 +397,17 @@ class PlayerActivity : Activity() {
             setPadding(dp(12), 0, 0, 0)
         }
         topRow.addView(tvLyricsTitle, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        // Toggle terjemahan Indonesia
+        btnTranslate = textView("ID", 12f, TEXT2, bold = true).apply {
+            gravity = Gravity.CENTER
+            background = roundedBg(SURFACE2, dp(14).toFloat())
+            setPadding(dp(14), dp(8), dp(14), dp(8))
+            isClickable = true
+            isFocusable = true
+            pressedFeedback()
+        }
+        btnTranslate.setOnClickListener { toggleTranslate() }
+        topRow.addView(btnTranslate)
         col.addView(topRow, matchWrap())
 
         tvLyricsStatus = textView("", 13f, TEXT2).apply {
@@ -362,7 +440,12 @@ class PlayerActivity : Activity() {
         lyricsBox.removeAllViews()
         lyricLines = emptyList()
         lyricViews = emptyList()
+        lyricTransViews = emptyList()
         lyricIndex = -1
+        lyricVideoId = track.videoId
+        translateOn = false
+        translateJob?.cancel()
+        refreshTranslateBtn()
 
         lyricsJob?.cancel()
         lyricsJob = uiScope.launch {
@@ -375,10 +458,13 @@ class PlayerActivity : Activity() {
             }
             tvLyricsStatus.visibility = View.GONE
             lyricLines = lines
-            lyricViews = lines.mapIndexed { i, line ->
+            val originals = mutableListOf<TextView>()
+            val translations = mutableListOf<TextView>()
+            for (line in lines) {
                 with(UiKit) {
-                    textView(line.text, 19f, TEXT2).apply {
-                        setPadding(0, dp(10), 0, dp(10))
+                    val row = vcol {}
+                    val tvLine = textView(line.text, 19f, TEXT2).apply {
+                        setPadding(0, dp(10), 0, dp(2))
                         setLineSpacing(dp(6).toFloat(), 1f)
                         isClickable = true
                         isFocusable = true
@@ -387,8 +473,19 @@ class PlayerActivity : Activity() {
                             updateLyricHighlight(true)
                         }
                     }
-                }.also { lyricsBox.addView(it, matchWrap()) }
+                    val tvTrans = textView("", 14f, TEXT2).apply {
+                        setPadding(0, 0, 0, dp(10))
+                        visibility = View.GONE
+                    }
+                    row.addView(tvLine, matchWrap())
+                    row.addView(tvTrans, matchWrap())
+                    lyricsBox.addView(row, matchWrap())
+                    originals.add(tvLine)
+                    translations.add(tvTrans)
+                }
             }
+            lyricViews = originals
+            lyricTransViews = translations
             startLyricsSync()
         }
     }
@@ -397,6 +494,68 @@ class PlayerActivity : Activity() {
         lyricsOverlay.visibility = View.GONE
         stopLyricsSync()
         lyricsJob?.cancel()
+        translateJob?.cancel()
+    }
+
+    // ================= Terjemahan lirik =================
+
+    private fun refreshTranslateBtn() {
+        if (!::btnTranslate.isInitialized) return
+        with(UiKit) {
+            btnTranslate.background = roundedBg(
+                if (translateOn) ACCENT2 else SURFACE2, dp(14).toFloat())
+            btnTranslate.setTextColor(if (translateOn) WHITE else TEXT2)
+        }
+    }
+
+    private fun toggleTranslate() {
+        if (lyricLines.isEmpty()) {
+            Toast.makeText(this, "Buka lirik dulu.", Toast.LENGTH_SHORT).show()
+            return
+        }
+        translateOn = !translateOn
+        refreshTranslateBtn()
+        if (translateOn) doTranslate()
+        else lyricTransViews.forEach { it.visibility = View.GONE }
+    }
+
+    private fun doTranslate() {
+        val vid = lyricVideoId ?: return
+        translateJob?.cancel()
+        translateJob = uiScope.launch {
+            tvLyricsStatus.text = "Menerjemahkan lirik…"
+            tvLyricsStatus.visibility = View.VISIBLE
+            try {
+                // 1. Coba cache database dulu (gratis, instan)
+                var list = vm.getTranslation(vid)?.split("\n")
+                    ?.takeIf { it.size == lyricLines.size }
+                // 2. Bila belum ada, panggil API lalu simpan ke cache
+                if (list == null) {
+                    list = Translator.translateLines(vid, lyricLines.map { it.text })
+                    if (list != null) vm.saveTranslation(vid, list.joinToString("\n"))
+                }
+                if (lyricsOverlay.visibility != View.VISIBLE) return@launch
+                tvLyricsStatus.visibility = View.GONE
+                if (list != null && translateOn) {
+                    lyricTransViews.forEachIndexed { i, tv ->
+                        val tr = list.getOrElse(i) { "" }.trim()
+                        tv.text = tr
+                        tv.visibility = if (tr.isNotEmpty()) View.VISIBLE else View.GONE
+                    }
+                } else if (translateOn) {
+                    translateOn = false
+                    refreshTranslateBtn()
+                    tvLyricsStatus.text = "Gagal menerjemahkan. Coba lagi nanti."
+                    tvLyricsStatus.visibility = View.VISIBLE
+                }
+            } catch (_: Exception) {
+                if (lyricsOverlay.visibility != View.VISIBLE) return@launch
+                translateOn = false
+                refreshTranslateBtn()
+                tvLyricsStatus.text = "Gagal menerjemahkan. Coba lagi nanti."
+                tvLyricsStatus.visibility = View.VISIBLE
+            }
+        }
     }
 
     private fun startLyricsSync() {

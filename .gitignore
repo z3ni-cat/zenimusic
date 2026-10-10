@@ -5,6 +5,9 @@ build/
 *.dex
 *.ap_
 
+# Secrets - NEVER commit (bot tokens etc.)
+**/Secrets.kt
+
 # Signing - NEVER commit
 *.keystore
 *.jks

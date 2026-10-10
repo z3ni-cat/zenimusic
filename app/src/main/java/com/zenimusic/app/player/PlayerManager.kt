@@ -10,6 +10,7 @@ import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import com.zenimusic.app.data.model.Track
 import com.zenimusic.app.data.repo.MusicRepository
+import com.zenimusic.app.data.repo.SponsorBlock
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -56,6 +57,14 @@ object PlayerManager {
 
     private var resolveJob: Job? = null
 
+    // ============ Sleep timer: flag fade agar tidak rebutan volume ============
+    /** True saat sleep timer sedang fade-out; crossfade harus diam. */
+    var sleepFadeActive = false
+        private set
+
+    // ============ SponsorBlock: segmen per videoId ============
+    private val sbSegments = mutableMapOf<String, List<SponsorBlock.Segment>>()
+
     // ============ Crossfade (transisi halus antar lagu, gratis) ============
     private var fadingOut = false
     private var fadeInJob: Job? = null
@@ -91,6 +100,60 @@ object PlayerManager {
         appContext = context.applicationContext
         repo = repository
         loadCrossfadePref()
+        loadSponsorBlockPref()
+    }
+
+    // ============ SponsorBlock ============
+    private fun loadSponsorBlockPref() {
+        try {
+            SponsorBlock.enabled = appContext.getSharedPreferences("zeni_prefs", Context.MODE_PRIVATE)
+                .getBoolean("sponsorblock_enabled", true) // default nyala
+        } catch (e: Exception) { SponsorBlock.enabled = true }
+    }
+
+    /** Toggle SponsorBlock; tersimpan di prefs. */
+    var sponsorBlockEnabled: Boolean
+        get() = SponsorBlock.enabled
+        set(v) {
+            SponsorBlock.enabled = v
+            try {
+                appContext.getSharedPreferences("zeni_prefs", Context.MODE_PRIVATE)
+                    .edit().putBoolean("sponsorblock_enabled", v).apply()
+            } catch (e: Exception) { /* abaikan */ }
+        }
+
+    // ============ Sleep timer ============
+
+    /**
+     * Fade-out volume 8 detik lalu pause (untuk sleep timer mode menit).
+     * Selama fade, crossfade dinonaktifkan agar tidak rebutan volume.
+     */
+    fun sleepFadeOutAndPause() {
+        scope.launch {
+            sleepFadeActive = true
+            try {
+                val pl = player
+                if (pl != null && pl.isPlaying) {
+                    val steps = 16
+                    repeat(steps) { i ->
+                        delay(500)
+                        if (!isActive) return@launch
+                        try {
+                            pl.volume = (1f - (i + 1).toFloat() / steps).coerceIn(0f, 1f)
+                        } catch (_: Exception) { }
+                    }
+                    try { pl.pause() } catch (_: Exception) { }
+                    try { pl.volume = 1f } catch (_: Exception) { }
+                }
+            } catch (_: Exception) { }
+            sleepFadeActive = false
+            fadingOut = false
+        }
+    }
+
+    /** Pause langsung tanpa fade (sleep timer mode lagu: lagu sudah selesai). */
+    fun pauseForSleep() {
+        try { player?.pause() } catch (_: Exception) { }
     }
 
     /** Called by PlaybackService once it builds the ExoPlayer. */
@@ -129,6 +192,8 @@ object PlayerManager {
                     }
                     // Crossfade: fade out halus saat lagu hampir selesai
                     applyCrossfadeOut(pl)
+                    // SponsorBlock: lewati segmen sponsor/intro/outro otomatis
+                    applySponsorSkip(pl)
                 }
             }
         }
@@ -140,6 +205,8 @@ object PlayerManager {
      */
     private fun applyCrossfadeOut(pl: ExoPlayer) {
         val fadeSec = _crossfadeSec
+        // Sleep timer sedang fade-out: jangan rebutan volume.
+        if (sleepFadeActive) return
         if (fadeSec <= 0 || !pl.isPlaying) {
             if (fadingOut) {
                 fadingOut = false
@@ -163,6 +230,21 @@ object PlayerManager {
                 fadingOut = false
             }
         } catch (e: Exception) { /* abaikan */ }
+    }
+
+    /**
+     * Lewati segmen SponsorBlock (sponsor/intro/outro) secara otomatis.
+     * Dipanggil tiap 500ms dari loop posisi.
+     */
+    private fun applySponsorSkip(pl: ExoPlayer) {
+        if (!SponsorBlock.enabled || !pl.isPlaying) return
+        try {
+            val vid = _uiState.value.current?.videoId ?: return
+            val segs = sbSegments[vid] ?: return
+            if (segs.isEmpty()) return
+            val target = SponsorBlock.skipTarget(segs, pl.currentPosition) ?: return
+            pl.seekTo(target)
+        } catch (_: Exception) { /* abaikan */ }
     }
 
     /**
@@ -292,6 +374,8 @@ object PlayerManager {
     fun clearError() = update { copy(error = null) }
 
     private fun onTrackEnded() {
+        // Sleep timer mode lagu: bila jatah habis, jangan auto-next.
+        if (SleepTimer.onTrackEnded()) return
         val s = _uiState.value
         if (s.repeatOne) {
             player?.seekTo(0)
@@ -420,6 +504,12 @@ object PlayerManager {
                 fadeInNewTrack(pl)
                 launch(Dispatchers.IO) { repo.recordHistory(track.videoId) }
                 update { copy(loading = false) }
+                // SponsorBlock: ambil segmen di background (tidak blokir playback)
+                if (SponsorBlock.enabled && !sbSegments.containsKey(track.videoId)) {
+                    launch(Dispatchers.IO) {
+                        sbSegments[track.videoId] = SponsorBlock.segments(track.videoId)
+                    }
+                }
                 // Prefetch proaktif: jaga antrian tetap terisi lagu baru yang se-genre
                 // agar radio tidak pernah kehabisan (tidak muter-muter di hasil pencarian saja).
                 prefetchRelatedIfNeeded(track)

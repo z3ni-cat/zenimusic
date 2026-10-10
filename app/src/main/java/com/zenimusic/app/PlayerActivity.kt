@@ -91,6 +91,9 @@ class PlayerActivity : Activity() {
     private lateinit var bufferOverlay: FrameLayout
     private lateinit var tvBufferStatus: TextView
 
+    // Animasi "bernapas" artwork
+    private var breathSet: android.animation.AnimatorSet? = null
+
     private var tracking = false
     private var currentTrack: Track? = null
     private var isFav = false
@@ -233,7 +236,10 @@ class PlayerActivity : Activity() {
         val btnPrev = circleIconButton(ZeniIcons.Kind.PREV, TEXT, 56)
         btnPrev.setOnClickListener { PlayerManager.previous() }
         btnPlay = accentCircleIconButton(ZeniIcons.Kind.PLAY, 72)
-        btnPlay.setOnClickListener { PlayerManager.togglePlayPause() }
+        btnPlay.setOnClickListener {
+            with(UiKit) { btnPlay.pop() }
+            PlayerManager.togglePlayPause()
+        }
         val btnNext = circleIconButton(ZeniIcons.Kind.NEXT, TEXT, 56)
         btnNext.setOnClickListener { PlayerManager.next() }
         ctrlRow.addView(btnPrev)
@@ -253,7 +259,10 @@ class PlayerActivity : Activity() {
         btnRepeat = circleIconButton(ZeniIcons.Kind.REPEAT, TEXT2, 48)
         btnRepeat.setOnClickListener { PlayerManager.toggleRepeat() }
         btnFav = circleIconButton(ZeniIcons.Kind.HEART, ACCENT2, 48)
-        btnFav.setOnClickListener { currentTrack?.let { vm.toggleFavorite(it) } }
+        btnFav.setOnClickListener {
+            with(UiKit) { btnFav.pop() }
+            currentTrack?.let { vm.toggleFavorite(it) }
+        }
         btnDl = circleIconButton(ZeniIcons.Kind.DOWNLOAD, TEXT, 48)
         btnDl.setOnClickListener { currentTrack?.let { vm.download(it) } }
         btnLyrics = circleIconButton(ZeniIcons.Kind.LYRICS, TEXT2, 48)
@@ -609,6 +618,39 @@ class PlayerActivity : Activity() {
         bufferOverlay.visibility = if (isBusy) View.VISIBLE else View.GONE
         if (isBusy) {
             tvBufferStatus.text = if (st.buffering) "Buffering..." else "Memuat..."
+        }
+        // Artwork "bernapas" halus saat diputar, berhenti saat pause
+        updateBreath(st.isPlaying && !isBusy)
+    }
+
+    /**
+     * Animasi napas: artwork membesar-mengecil sangat halus (1.0 → 1.04)
+     * dalam loop 2.4 detik. Berhenti saat pause agar hemat baterai.
+     */
+    private fun updateBreath(playing: Boolean) {
+        if (!::ivArt.isInitialized) return
+        if (playing) {
+            if (breathSet?.isRunning == true) return
+            breathSet?.cancel()
+            val interp = android.view.animation.AccelerateDecelerateInterpolator()
+            val sx = android.animation.ObjectAnimator.ofFloat(ivArt, "scaleX", 1f, 1.04f, 1f).apply {
+                duration = 2400
+                repeatCount = android.animation.ObjectAnimator.INFINITE
+                interpolator = interp
+            }
+            val sy = android.animation.ObjectAnimator.ofFloat(ivArt, "scaleY", 1f, 1.04f, 1f).apply {
+                duration = 2400
+                repeatCount = android.animation.ObjectAnimator.INFINITE
+                interpolator = interp
+            }
+            breathSet = android.animation.AnimatorSet().apply {
+                playTogether(sx, sy)
+                start()
+            }
+        } else {
+            breathSet?.cancel()
+            breathSet = null
+            ivArt.scaleX = 1f; ivArt.scaleY = 1f
         }
     }
 

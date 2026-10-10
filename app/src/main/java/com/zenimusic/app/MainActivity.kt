@@ -91,6 +91,7 @@ class MainActivity : Activity() {
 
     // ---- Segmented nav ----
     private lateinit var segmentButtons: List<Button>
+    private var currentSegment = 1
     private lateinit var zeniPane: ScrollView
     private lateinit var searchPane: LinearLayout
     private lateinit var libraryPane: LinearLayout
@@ -253,7 +254,10 @@ class MainActivity : Activity() {
         btnMiniPrev = iconAction(ZeniIcons.Kind.PREV, TEXT2, 40, 8)
         btnMiniPrev.setOnClickListener { PlayerManager.previous() }
         btnMiniPlay = iconAction(ZeniIcons.Kind.PLAY, TEXT, 40, 8)
-        btnMiniPlay.setOnClickListener { PlayerManager.togglePlayPause() }
+        btnMiniPlay.setOnClickListener {
+            with(UiKit) { btnMiniPlay.pop() }
+            PlayerManager.togglePlayPause()
+        }
         // Spinner buffering (tampil saat loading/buffering, gantikan tombol play)
         miniSpinner = android.widget.ProgressBar(this@MainActivity).apply {
             isIndeterminate = true
@@ -1127,10 +1131,23 @@ class MainActivity : Activity() {
 
     private fun selectSegment(idx: Int) = with(UiKit) {
         segmentButtons.forEachIndexed { i, b -> styleSegment(b, i == idx) }
-        zeniPane.visibility = if (idx == 0) View.VISIBLE else View.GONE
-        searchPane.visibility = if (idx == 1) View.VISIBLE else View.GONE
-        libraryPane.visibility = if (idx == 2) View.VISIBLE else View.GONE
-        podcastPane.visibility = if (idx == 3) View.VISIBLE else View.GONE
+        val panes = listOf(zeniPane, searchPane, libraryPane, podcastPane)
+        val dir = when {
+            idx > currentSegment -> 1
+            idx < currentSegment -> -1
+            else -> 0
+        }
+        currentSegment = idx
+        panes.forEachIndexed { i, pane ->
+            if (i == idx) {
+                val wasGone = pane.visibility != View.VISIBLE
+                pane.visibility = View.VISIBLE
+                // Animasi fade + slide hanya saat benar-benar pindah tab
+                if (wasGone) pane.fadeSlideIn(dir)
+            } else {
+                pane.visibility = View.GONE
+            }
+        }
         if (idx == 3) ensurePodcastHome()
         if (idx == 1) refreshDaylistCard()
     }
@@ -1326,8 +1343,13 @@ class MainActivity : Activity() {
 
     private fun updateMiniPlayer(st: PlayerManager.UiState) {
         val cur = st.current
-        (miniPlayer.parent as? View)?.visibility = if (cur == null) View.GONE else View.VISIBLE
-        miniPlayer.visibility = if (cur == null) View.GONE else View.VISIBLE
+        val wrap = miniPlayer.parent as? View
+        val shouldShow = cur != null
+        val wasGone = miniPlayer.visibility != View.VISIBLE
+        wrap?.visibility = if (shouldShow) View.VISIBLE else View.GONE
+        miniPlayer.visibility = if (shouldShow) View.VISIBLE else View.GONE
+        // Slide up halus saat mini player muncul
+        if (shouldShow && wasGone) with(UiKit) { miniPlayer.slideUpIn() }
         if (cur == null) return
         tvMiniTitle.text = cur.title
         val isBusy = st.loading || st.buffering

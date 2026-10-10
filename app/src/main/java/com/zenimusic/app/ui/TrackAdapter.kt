@@ -41,9 +41,13 @@ class TrackAdapter(
     var downloadingIds: Set<String> = emptySet()
 
     fun submit(list: List<Track>) {
+        // Tandai untuk animasi stagger hanya jika isi list benar-benar berganti
+        stagger = list.firstOrNull()?.videoId != items.firstOrNull()?.videoId || list.size != items.size
         items = list
         notifyDataSetChanged()
     }
+
+    private var stagger = false
 
     override fun getCount(): Int = items.size
     override fun getItem(position: Int): Track = items[position]
@@ -141,6 +145,18 @@ class TrackAdapter(
 
         // Update click listener karena view di-recycle.
         (root.getChildAt(0) as View).setOnClickListener { onPlay(t) }
+
+        // Animasi stagger: kartu muncul satu per satu (hanya untuk list baru, max 8 pertama)
+        if (stagger && position < 8) {
+            root.alpha = 0f
+            root.translationY = ctx.dp(16).toFloat()
+            root.animate().alpha(1f).translationY(0f)
+                .setStartDelay(position * 60L)
+                .setDuration(240)
+                .setInterpolator(android.view.animation.DecelerateInterpolator(1.2f))
+                .start()
+            if (position == minOf(7, items.size - 1)) stagger = false
+        }
         return root
     }
 

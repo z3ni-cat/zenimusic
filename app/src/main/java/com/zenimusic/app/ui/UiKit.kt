@@ -348,4 +348,56 @@ object UiKit {
             ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.WRAP_CONTENT
         )
+
+    // ================= Animasi halus (soft, clean, ringan) =================
+
+    /** Interpolator lembut standar. */
+    private val easeOut = android.view.animation.DecelerateInterpolator(1.2f)
+    private val bounce = android.view.animation.OvershootInterpolator(1.4f)
+
+    /**
+     * Fade + slide masuk. direction: 1 = dari kanan, -1 = dari kiri, 0 = dari bawah.
+     * Durasi 220ms — cepat dan halus.
+     */
+    fun View.fadeSlideIn(direction: Int = 0, duration: Long = 220) {
+        val d = context.dp(24).toFloat()
+        alpha = 0f
+        when (direction) {
+            1 -> { translationX = d; translationY = 0f }
+            -1 -> { translationX = -d; translationY = 0f }
+            else -> { translationX = 0f; translationY = d }
+        }
+        animate().alpha(1f).translationX(0f).translationY(0f)
+            .setDuration(duration).setInterpolator(easeOut).start()
+    }
+
+    /** Efek pop (memantul lembut) — untuk tombol play, heart, dsb. */
+    fun View.pop(duration: Long = 280) {
+        scaleX = 0.85f; scaleY = 0.85f
+        animate().scaleX(1f).scaleY(1f)
+            .setDuration(duration).setInterpolator(bounce).start()
+    }
+
+    /** Slide naik halus — untuk mini player saat muncul. */
+    fun View.slideUpIn(duration: Long = 260) {
+        val d = context.dp(64).toFloat()
+        alpha = 0f; translationY = d
+        animate().alpha(1f).translationY(0f)
+            .setDuration(duration).setInterpolator(easeOut).start()
+    }
+
+    /**
+     * Stagger: animasikan anak-anak ViewGroup satu per satu dari bawah.
+     * Dipakai saat list dimuat agar terasa hidup.
+     */
+    fun ViewGroup.staggerIn(delayEach: Long = 60, duration: Long = 240) {
+        for (i in 0 until childCount) {
+            val c = getChildAt(i) ?: continue
+            c.alpha = 0f
+            c.translationY = context.dp(16).toFloat()
+            c.animate().alpha(1f).translationY(0f)
+                .setStartDelay(i * delayEach)
+                .setDuration(duration).setInterpolator(easeOut).start()
+        }
+    }
 }

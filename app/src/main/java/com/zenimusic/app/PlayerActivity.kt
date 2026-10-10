@@ -6,14 +6,18 @@ import android.text.TextUtils
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
 import androidx.lifecycle.viewModelScope
 import com.zenimusic.app.data.model.Track
 import com.zenimusic.app.data.model.formatDurationMs
+import com.zenimusic.app.data.repo.LyricLine
+import com.zenimusic.app.data.repo.LyricsRepository
 import com.zenimusic.app.player.PlayerManager
 import com.zenimusic.app.ui.AppViewModel
 import com.zenimusic.app.ui.ImageLoader
@@ -63,6 +67,20 @@ class PlayerActivity : Activity() {
     private lateinit var btnRepeat: ImageView
     private lateinit var btnFav: ImageView
     private lateinit var btnDl: ImageView
+    private lateinit var btnLyrics: ImageView
+
+    // Overlay lirik ala Apple Music
+    private lateinit var lyricsOverlay: FrameLayout
+    private lateinit var lyricsScroll: ScrollView
+    private lateinit var lyricsBox: LinearLayout
+    private lateinit var tvLyricsTitle: TextView
+    private lateinit var tvLyricsStatus: TextView
+    private var lyricLines: List<LyricLine> = emptyList()
+    private var lyricViews: List<TextView> = emptyList()
+    private var lyricIndex = -1
+    private var lyricsJob: Job? = null
+    private var lyricsSync: Runnable? = null
+    private val lyricsHandler = android.os.Handler(android.os.Looper.getMainLooper())
 
     private var tracking = false
     private var currentTrack: Track? = null
@@ -141,7 +159,7 @@ class PlayerActivity : Activity() {
     }
 
     private fun buildUi() = with(UiKit) {
-        val root = vcol {
+        val playerUi = vcol {
             setBackgroundColor(BG)
             gravity = Gravity.CENTER_HORIZONTAL
             setPadding(dp(24), dp(12), dp(24), dp(24))
@@ -152,7 +170,7 @@ class PlayerActivity : Activity() {
         btnClose.setOnClickListener { finish() }
         topRow.addView(btnClose)
         topRow.add(View(this@PlayerActivity), 0, dp(1), 1f)
-        root.addView(topRow, matchWrap())
+        playerUi.addView(topRow, matchWrap())
 
         // Artwork: rounded 24dp + shadow via outlineProvider + elevation
         ivArt = ImageView(this@PlayerActivity).apply {
@@ -164,17 +182,17 @@ class PlayerActivity : Activity() {
             ViewGroup.LayoutParams.MATCH_PARENT, dp(300)).apply {
             topMargin = dp(20); bottomMargin = dp(24)
         }
-        root.addView(ivArt, artLp)
+        playerUi.addView(ivArt, artLp)
 
         tvTitle = textView("", 20f, TEXT, bold = true).apply {
             gravity = Gravity.CENTER
             maxLines = 2
             ellipsize = TextUtils.TruncateAt.END
         }
-        root.addView(tvTitle, matchWrap())
+        playerUi.addView(tvTitle, matchWrap())
         tvChannel = textView("", 14f, TEXT2).apply { gravity = Gravity.CENTER }
         val chLp = matchWrap().apply { bottomMargin = dp(16) }
-        root.addView(tvChannel, chLp)
+        playerUi.addView(tvChannel, chLp)
 
         val seekRow = hrow {}
         tvPos = textView("--:--", 12f, TEXT2).apply { gravity = Gravity.CENTER }
@@ -184,7 +202,7 @@ class PlayerActivity : Activity() {
         seekRow.addView(tvPos, LinearLayout.LayoutParams(dp(52), ViewGroup.LayoutParams.WRAP_CONTENT))
         seekRow.add(seekBar, 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         seekRow.addView(tvDur, LinearLayout.LayoutParams(dp(52), ViewGroup.LayoutParams.WRAP_CONTENT))
-        root.addView(seekRow, matchWrap())
+        playerUi.addView(seekRow, matchWrap())
 
         seekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(sb: SeekBar?, progress: Int, fromUser: Boolean) {
@@ -213,7 +231,7 @@ class PlayerActivity : Activity() {
             LinearLayout.LayoutParams(dp(16), dp(1)))
         ctrlRow.addView(btnNext)
         val ctrlLp = matchWrap().apply { topMargin = dp(12); bottomMargin = dp(12) }
-        root.addView(ctrlRow, ctrlLp)
+        playerUi.addView(ctrlRow, ctrlLp)
 
         // Opsi: shuffle / repeat / favorit / download — 48dp
         val optRow = hrow { gravity = Gravity.CENTER }
@@ -225,6 +243,8 @@ class PlayerActivity : Activity() {
         btnFav.setOnClickListener { currentTrack?.let { vm.toggleFavorite(it) } }
         btnDl = circleIconButton(ZeniIcons.Kind.DOWNLOAD, TEXT, 48)
         btnDl.setOnClickListener { currentTrack?.let { vm.download(it) } }
+        btnLyrics = circleIconButton(ZeniIcons.Kind.LYRICS, TEXT2, 48)
+        btnLyrics.setOnClickListener { openLyrics() }
         optRow.addView(btnShuffle)
         optRow.addView(View(this@PlayerActivity).apply { visibility = View.INVISIBLE },
             LinearLayout.LayoutParams(dp(10), dp(1)))
@@ -235,15 +255,179 @@ class PlayerActivity : Activity() {
         optRow.addView(View(this@PlayerActivity).apply { visibility = View.INVISIBLE },
             LinearLayout.LayoutParams(dp(10), dp(1)))
         optRow.addView(btnDl)
-        root.addView(optRow, matchWrap())
+        optRow.addView(View(this@PlayerActivity).apply { visibility = View.INVISIBLE },
+            LinearLayout.LayoutParams(dp(10), dp(1)))
+        optRow.addView(btnLyrics)
+        playerUi.addView(optRow, matchWrap())
 
+        buildLyricsOverlay()
+        val root = FrameLayout(this@PlayerActivity).apply {
+            setBackgroundColor(BG)
+            addView(playerUi, FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+            addView(lyricsOverlay, FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        }
         setContentView(root)
     }
 
+    /**
+     * Overlay lirik full-screen ala Apple Music:
+     * baris aktif menyala terang, auto-scroll, tap baris = lompat.
+     */
+    private fun buildLyricsOverlay() = with(UiKit) {
+        lyricsOverlay = FrameLayout(this@PlayerActivity).apply {
+            setBackgroundColor(BG)
+            visibility = View.GONE
+        }
+        val col = vcol {
+            setBackgroundColor(BG)
+            setPadding(dp(24), dp(12), dp(24), dp(24))
+        }
+        // Bar atas: tutup + judul
+        val topRow = hrow {}
+        val btnClose = iconAction(ZeniIcons.Kind.CLOSE, TEXT2, 40, 10)
+        btnClose.setOnClickListener { closeLyrics() }
+        topRow.addView(btnClose)
+        tvLyricsTitle = textView("Lirik", 17f, TEXT, bold = true).apply {
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(12), 0, 0, 0)
+        }
+        topRow.addView(tvLyricsTitle, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        col.addView(topRow, matchWrap())
+
+        tvLyricsStatus = textView("", 13f, TEXT2).apply {
+            gravity = Gravity.CENTER
+            setPadding(0, dp(16), 0, dp(16))
+        }
+        col.addView(tvLyricsStatus, matchWrap())
+
+        lyricsScroll = ScrollView(this@PlayerActivity).apply {
+            isFillViewport = true
+        }
+        lyricsBox = vcol {
+            setPadding(0, dp(8), 0, dp(120))
+        }
+        lyricsScroll.addView(lyricsBox, ViewGroup.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        col.addView(lyricsScroll, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+
+        lyricsOverlay.addView(col, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+    }
+
+    private fun openLyrics() {
+        val track = currentTrack ?: return
+        lyricsOverlay.visibility = View.VISIBLE
+        tvLyricsTitle.text = track.title
+        tvLyricsStatus.text = "Mencari lirik…"
+        tvLyricsStatus.visibility = View.VISIBLE
+        lyricsBox.removeAllViews()
+        lyricLines = emptyList()
+        lyricViews = emptyList()
+        lyricIndex = -1
+
+        lyricsJob?.cancel()
+        lyricsJob = uiScope.launch {
+            val lines = LyricsRepository.getLyrics(
+                track.channel, track.title, track.durationSec)
+            if (lyricsOverlay.visibility != View.VISIBLE) return@launch
+            if (lines.isEmpty()) {
+                tvLyricsStatus.text = "Lirik tidak ditemukan untuk lagu ini."
+                return@launch
+            }
+            tvLyricsStatus.visibility = View.GONE
+            lyricLines = lines
+            lyricViews = lines.mapIndexed { i, line ->
+                with(UiKit) {
+                    textView(line.text, 19f, TEXT2).apply {
+                        setPadding(0, dp(10), 0, dp(10))
+                        setLineSpacing(dp(6).toFloat(), 1f)
+                        isClickable = true
+                        isFocusable = true
+                        setOnClickListener {
+                            PlayerManager.seekTo(line.timeMs)
+                            updateLyricHighlight(true)
+                        }
+                    }
+                }.also { lyricsBox.addView(it, matchWrap()) }
+            }
+            startLyricsSync()
+        }
+    }
+
+    private fun closeLyrics() {
+        lyricsOverlay.visibility = View.GONE
+        stopLyricsSync()
+        lyricsJob?.cancel()
+    }
+
+    private fun startLyricsSync() {
+        stopLyricsSync()
+        val r = object : Runnable {
+            override fun run() {
+                if (lyricsOverlay.visibility == View.VISIBLE && lyricLines.isNotEmpty()) {
+                    updateLyricHighlight(false)
+                    lyricsHandler.postDelayed(this, 400)
+                }
+            }
+        }
+        lyricsSync = r
+        lyricsHandler.post(r)
+    }
+
+    private fun stopLyricsSync() {
+        lyricsSync?.let { lyricsHandler.removeCallbacks(it) }
+        lyricsSync = null
+    }
+
+    /** Sorot baris aktif sesuai posisi putar; scroll agar di tengah. */
+    private fun updateLyricHighlight(fromTap: Boolean) {
+        val pos = if (fromTap) {
+            // setelah tap, pakai posisi target (sudah seek)
+            lyricLines.getOrNull(lyricIndex)?.timeMs ?: PlayerManager.uiState.value.positionMs
+        } else {
+            PlayerManager.uiState.value.positionMs
+        }
+        var idx = lyricLines.indexOfLast { it.timeMs <= pos }
+        if (idx < 0) idx = 0
+        if (idx == lyricIndex) return
+        // redupkan yang lama
+        if (lyricIndex in lyricViews.indices) {
+            lyricViews[lyricIndex].apply {
+                setTextColor(TEXT2)
+                setTypeface(typeface, android.graphics.Typeface.NORMAL)
+            }
+        }
+        lyricIndex = idx
+        val v = lyricViews.getOrNull(idx) ?: return
+        v.apply {
+            setTextColor(TEXT)
+            setTypeface(typeface, android.graphics.Typeface.BOLD)
+        }
+        // scroll agar baris aktif di tengah layar
+        lyricsScroll.post {
+            val y = v.top - lyricsScroll.height / 2 + v.height / 2
+            lyricsScroll.smoothScrollTo(0, y.coerceAtLeast(0))
+        }
+    }
+
     override fun onDestroy() {
+        stopLyricsSync()
+        lyricsJob?.cancel()
         favJob?.cancel()
         if (::uiScope.isInitialized) uiScope.cancel()
         if (::vm.isInitialized) vm.viewModelScope.cancel()
         super.onDestroy()
+    }
+
+    @Deprecated("Use OnBackPressedDispatcher")
+    override fun onBackPressed() {
+        if (::lyricsOverlay.isInitialized && lyricsOverlay.visibility == View.VISIBLE) {
+            closeLyrics()
+        } else {
+            super.onBackPressed()
+        }
     }
 }

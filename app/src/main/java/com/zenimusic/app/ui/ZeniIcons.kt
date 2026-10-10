@@ -21,7 +21,7 @@ object ZeniIcons {
         DOWNLOAD, PLUS, CLOSE, TRASH,
         SEARCH, HOME, PLAYLIST, INFO, CHAT,
         CHEVRON_RIGHT, CHEVRON_LEFT,
-        SHUFFLE, REPEAT
+        SHUFFLE, REPEAT, LYRICS
     }
 
     private const val S = 96f
@@ -178,6 +178,12 @@ object ZeniIcons {
                     close()
                 }
                 c.drawPath(tri, fillRound)
+            }
+            Kind.LYRICS -> {
+                // Baris-baris teks (lirik) — tiga garis horizontal.
+                c.drawLine(28f, 34f, 68f, 34f, stroke)
+                c.drawLine(28f, 48f, 68f, 48f, stroke)
+                c.drawLine(28f, 62f, 56f, 62f, stroke)
             }
         }
         return BitmapDrawable(ctx.resources, bmp)

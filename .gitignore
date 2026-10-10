@@ -1,0 +1,27 @@
+# Build outputs
+build/
+*.apk
+*.aab
+*.dex
+*.ap_
+
+# Signing - NEVER commit
+*.keystore
+*.jks
+*key-info*.txt
+*signing*
+
+# Gradle
+.gradle/
+local.properties
+
+# IDE
+.idea/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Backup UI (not compiled, historical)
+backup-ui/

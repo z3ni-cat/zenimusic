@@ -1,0 +1,10 @@
++ /home/hatch/workspace/android-sdk/build-tools/34.0.0/aapt2 compile --dir /home/hatch/workspace/zenimusic-native/build/merged-res -o /home/hatch/workspace/zenimusic-native/build/compiled-res/merged
+compiled 459 resource files
++ /home/hatch/workspace/android-sdk/build-tools/34.0.0/aapt2 link -o /home/hatch/workspace/zenimusic-native/build/base.apk -I /home/hatch/workspace/android-sdk/platforms/android-34/android.jar --manifest /home/hatch/workspace/zenimusic-native/app/src/main/AndroidManifest.xml ...
+linked -> /home/hatch/workspace/zenimusic-native/build/base.apk
+final symbol table: 772 entries
+  [warn] androidx.customview: 2 symbols not found in final table
+  [warn] androidx.media3.ui: 2 symbols not found in final table
+generated R.java for 46 library packages
++ /home/hatch/workspace/jdk/jdk-17.0.20.1+1/bin/javac -nowarn -d /home/hatch/workspace/zenimusic-native/build/classes-r /home/hatch/workspace/zenimusic-native/build/gen-r/androidx/activity/R.java /home/hatch/workspace/zenimusic-native/build/gen-r/androidx/activity/compose/R.java /home/hatch/workspace/zenimusic-native/build/gen-r/androidx/annotation/experimental/R.java /home/hatch/workspace/zenimusic-native/build/gen-r/androidx/compose/animation/R.java ...
+compiled 46 R.java files

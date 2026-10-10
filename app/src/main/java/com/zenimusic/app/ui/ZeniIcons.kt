@@ -21,7 +21,7 @@ object ZeniIcons {
         DOWNLOAD, PLUS, CLOSE, TRASH,
         SEARCH, HOME, PLAYLIST, INFO, CHAT,
         CHEVRON_RIGHT, CHEVRON_LEFT,
-        SHUFFLE, REPEAT, LYRICS, QUEUE
+        SHUFFLE, REPEAT, LYRICS, QUEUE, EQ
     }
 
     private const val S = 96f
@@ -194,6 +194,15 @@ object ZeniIcons {
                     moveTo(24f, 26f); lineTo(24f, 38f); lineTo(34f, 32f); close()
                 }
                 c.drawPath(p, fillRound)
+            }
+            Kind.EQ -> {
+                // Equalizer: tiga slider vertikal dengan knob.
+                val xs = floatArrayOf(30f, 48f, 66f)
+                val knobs = floatArrayOf(38f, 56f, 44f)
+                for (i in xs.indices) {
+                    c.drawLine(xs[i], 24f, xs[i], 72f, stroke)
+                    c.drawCircle(xs[i], knobs[i], 7f, fillRound)
+                }
             }
         }
         return BitmapDrawable(ctx.resources, bmp)

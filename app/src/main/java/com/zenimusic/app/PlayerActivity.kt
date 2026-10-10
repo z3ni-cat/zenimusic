@@ -267,6 +267,11 @@ class PlayerActivity : Activity() {
         btnDl.setOnClickListener { currentTrack?.let { vm.download(it) } }
         btnLyrics = circleIconButton(ZeniIcons.Kind.LYRICS, TEXT2, 48)
         btnLyrics.setOnClickListener { openLyrics() }
+        val btnEq = circleIconButton(ZeniIcons.Kind.EQ, TEXT2, 48)
+        btnEq.setOnClickListener {
+            with(UiKit) { btnEq.pop() }
+            startActivity(android.content.Intent(this@PlayerActivity, EqualizerActivity::class.java))
+        }
         optRow.addView(btnShuffle)
         optRow.addView(View(this@PlayerActivity).apply { visibility = View.INVISIBLE },
             LinearLayout.LayoutParams(dp(10), dp(1)))
@@ -280,6 +285,9 @@ class PlayerActivity : Activity() {
         optRow.addView(View(this@PlayerActivity).apply { visibility = View.INVISIBLE },
             LinearLayout.LayoutParams(dp(10), dp(1)))
         optRow.addView(btnLyrics)
+        optRow.addView(View(this@PlayerActivity).apply { visibility = View.INVISIBLE },
+            LinearLayout.LayoutParams(dp(10), dp(1)))
+        optRow.addView(btnEq)
         playerUi.addView(optRow, matchWrap())
 
         buildLyricsOverlay()

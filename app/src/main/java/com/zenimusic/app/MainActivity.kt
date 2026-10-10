@@ -20,6 +20,9 @@ import android.widget.Button
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
+import android.widget.AdapterView
+import android.widget.ArrayAdapter
+import android.widget.Spinner
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ListView
@@ -326,6 +329,65 @@ class MainActivity : Activity() {
             intro.addView(row, matchWrap())
         }
         col.addView(intro, matchWrap().apply { bottomMargin = dp(12) })
+
+        // Pengaturan: Equalizer + Crossfade
+        val setCard = vcol {
+            background = cardBg()
+            setPadding(dp(16), dp(14), dp(16), dp(14))
+        }
+        setCard.addView(textView("Pengaturan Audio", 15f, TEXT, bold = true).apply {
+            setPadding(0, 0, 0, dp(10))
+        }, matchWrap())
+
+        // Baris Equalizer
+        val eqRow = hrow {
+            gravity = Gravity.CENTER_VERTICAL
+            pressedFeedback()
+        }
+        eqRow.addView(iconAction(ZeniIcons.Kind.EQ, ACCENT1, 40, 8))
+        val eqCol = vcol { setPadding(dp(12), 0, dp(8), 0) }
+        eqCol.addView(textView("Equalizer", 14f, TEXT, bold = true), matchWrap())
+        eqCol.addView(textView("Sesuaikan bass, vokal, treble — gratis", 12f, TEXT2), matchWrap())
+        eqRow.add(eqCol, 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        eqRow.addView(iconAction(ZeniIcons.Kind.CHEVRON_RIGHT, TEXT2, 28, 6))
+        eqRow.setOnClickListener {
+            startActivity(Intent(this@MainActivity, EqualizerActivity::class.java))
+        }
+        setCard.addView(eqRow, matchWrap())
+
+        // Baris Crossfade
+        val cfRow = hrow {
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dp(12), 0, 0)
+        }
+        cfRow.addView(iconAction(ZeniIcons.Kind.SHUFFLE, ACCENT1, 40, 8))
+        val cfCol = vcol { setPadding(dp(12), 0, dp(8), 0) }
+        cfCol.addView(textView("Crossfade", 14f, TEXT, bold = true), matchWrap())
+        cfCol.addView(textView("Transisi halus antar lagu", 12f, TEXT2), matchWrap())
+        cfRow.add(cfCol, 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        val cfSpinner = Spinner(this@MainActivity).apply {
+            val opts = listOf("Mati", "3 dtk", "5 dtk", "8 dtk", "12 dtk")
+            adapter = ArrayAdapter(this@MainActivity,
+                android.R.layout.simple_spinner_dropdown_item, opts)
+            val cur = PlayerManager.crossfadeSec
+            setSelection(when (cur) {
+                3 -> 1; 5 -> 2; 8 -> 3; 12 -> 4; else -> 0
+            })
+        }
+        var cfInit = true
+        cfSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) {
+                if (cfInit) { cfInit = false; return }
+                PlayerManager.crossfadeSec = when (pos) {
+                    1 -> 3; 2 -> 5; 3 -> 8; 4 -> 12; else -> 0
+                }
+            }
+            override fun onNothingSelected(p: AdapterView<*>?) {}
+        }
+        cfRow.addView(cfSpinner,
+            LinearLayout.LayoutParams(dp(110), ViewGroup.LayoutParams.WRAP_CONTENT))
+        setCard.addView(cfRow, matchWrap())
+        col.addView(setCard, matchWrap().apply { bottomMargin = dp(12) })
 
         // Menu WhatsApp
         val waRow = hrow {

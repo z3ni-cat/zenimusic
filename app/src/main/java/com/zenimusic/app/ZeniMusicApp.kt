@@ -62,6 +62,8 @@ class ZeniMusicApp : Application() {
             repository = MusicRepository(db, http, filesDir)
 
             PlayerManager.init(this, repository)
+            // Equalizer: siapkan prefs (attach ke session dilakukan di attachPlayer)
+            com.zenimusic.app.audio.EqualizerHelper.init(this)
         } catch (e: Throwable) {
             initError = e
         }

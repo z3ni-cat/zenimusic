@@ -56,14 +56,50 @@ object PlayerManager {
 
     private var resolveJob: Job? = null
 
+    // ============ Crossfade (transisi halus antar lagu, gratis) ============
+    private var fadingOut = false
+    private var fadeInJob: Job? = null
+    private var _crossfadeSec: Int = 5
+
+    /** Durasi crossfade dalam detik. 0 = mati. Tersimpan di prefs. */
+    var crossfadeSec: Int
+        get() = _crossfadeSec
+        set(v) {
+            _crossfadeSec = v.coerceIn(0, 12)
+            if (::appContext.isInitialized) {
+                try {
+                    appContext.getSharedPreferences("zeni_prefs", Context.MODE_PRIVATE)
+                        .edit().putInt("crossfade_sec", _crossfadeSec).apply()
+                } catch (e: Exception) { /* abaikan */ }
+            }
+            // Jika dimatikan, kembalikan volume penuh
+            if (_crossfadeSec == 0) {
+                fadingOut = false
+                fadeInJob?.cancel()
+                try { player?.volume = 1f } catch (e: Exception) { /* abaikan */ }
+            }
+        }
+
+    private fun loadCrossfadePref() {
+        try {
+            _crossfadeSec = appContext.getSharedPreferences("zeni_prefs", Context.MODE_PRIVATE)
+                .getInt("crossfade_sec", 5) // default 5 detik
+        } catch (e: Exception) { _crossfadeSec = 5 }
+    }
+
     fun init(context: Context, repository: MusicRepository) {
         appContext = context.applicationContext
         repo = repository
+        loadCrossfadePref()
     }
 
     /** Called by PlaybackService once it builds the ExoPlayer. */
     fun attachPlayer(p: ExoPlayer) {
         player = p
+        // Tempel equalizer ke audio session player
+        try {
+            com.zenimusic.app.audio.EqualizerHelper.attach(p.audioSessionId)
+        } catch (e: Exception) { /* abaikan */ }
         p.addListener(object : Player.Listener {
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 update { copy(isPlaying = isPlaying) }
@@ -91,8 +127,72 @@ object PlayerManager {
                             durationMs = pl.duration.coerceAtLeast(0)
                         )
                     }
+                    // Crossfade: fade out halus saat lagu hampir selesai
+                    applyCrossfadeOut(pl)
                 }
             }
+        }
+    }
+
+    /**
+     * Fade out volume secara proporsional saat posisi mendekati akhir lagu.
+     * Dipanggil tiap 500ms dari loop posisi.
+     */
+    private fun applyCrossfadeOut(pl: ExoPlayer) {
+        val fadeSec = _crossfadeSec
+        if (fadeSec <= 0 || !pl.isPlaying) {
+            if (fadingOut) {
+                fadingOut = false
+                try { pl.volume = 1f } catch (e: Exception) { /* abaikan */ }
+            }
+            return
+        }
+        try {
+            val dur = pl.duration
+            val pos = pl.currentPosition
+            if (dur <= 0) return
+            val fadeMs = fadeSec * 1000L
+            val remaining = dur - pos
+            if (remaining in 1..fadeMs) {
+                // Di zona fade: volume proporsional dengan sisa waktu
+                pl.volume = (remaining.toFloat() / fadeMs).coerceIn(0.05f, 1f)
+                fadingOut = true
+            } else if (fadingOut && remaining > fadeMs) {
+                // Keluar dari zona fade (mis. setelah seek): kembalikan volume
+                pl.volume = 1f
+                fadingOut = false
+            }
+        } catch (e: Exception) { /* abaikan */ }
+    }
+
+    /**
+     * Fade in halus saat lagu baru mulai (melengkapi fade out lagu sebelumnya).
+     * Dipanggil setelah pl.play() di resolveAndPlay.
+     */
+    private fun fadeInNewTrack(pl: ExoPlayer) {
+        fadeInJob?.cancel()
+        val fadeSec = _crossfadeSec
+        if (fadeSec <= 0) {
+            try { pl.volume = 1f } catch (e: Exception) { /* abaikan */ }
+            fadingOut = false
+            return
+        }
+        fadeInJob = scope.launch {
+            try {
+                val startVol = pl.volume.coerceIn(0f, 1f)
+                val fadeMs = (fadeSec * 1000L / 2).coerceAtLeast(1200)
+                val steps = 24
+                repeat(steps) { i ->
+                    delay(fadeMs / steps)
+                    if (!isActive) return@launch
+                    val t = (i + 1).toFloat() / steps
+                    // Easing halus (smoothstep)
+                    val eased = t * t * (3 - 2 * t)
+                    pl.volume = (startVol + (1f - startVol) * eased).coerceIn(0f, 1f)
+                }
+                pl.volume = 1f
+            } catch (e: Exception) { /* abaikan */ }
+            fadingOut = false
         }
     }
 
@@ -316,6 +416,8 @@ object PlayerManager {
                 pl.setMediaItem(item)
                 pl.prepare()
                 pl.play()
+                // Crossfade: fade in halus untuk lagu baru
+                fadeInNewTrack(pl)
                 launch(Dispatchers.IO) { repo.recordHistory(track.videoId) }
                 update { copy(loading = false) }
                 // Prefetch proaktif: jaga antrian tetap terisi lagu baru yang se-genre

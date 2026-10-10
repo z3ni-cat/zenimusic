@@ -36,6 +36,10 @@
             android:name=".SamplesActivity"
             android:exported="false" />
 
+        <activity
+            android:name=".EqualizerActivity"
+            android:exported="false" />
+
         <service
             android:name=".player.PlaybackService"
             android:foregroundServiceType="mediaPlayback"

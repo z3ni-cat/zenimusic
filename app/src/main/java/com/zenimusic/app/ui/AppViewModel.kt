@@ -11,6 +11,7 @@ import com.zenimusic.app.data.model.Track
 import com.zenimusic.app.data.repo.Daylist
 import com.zenimusic.app.data.repo.DaylistSlot
 import com.zenimusic.app.data.repo.PodcastChannel
+import com.zenimusic.app.data.repo.Samples
 import com.zenimusic.app.data.repo.Wrapped
 import com.zenimusic.app.data.repo.WrappedStats
 import com.zenimusic.app.player.PlayerManager
@@ -62,6 +63,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Generate Daylist (~20 lagu sesuai slot waktu). */
     suspend fun daylist(slot: DaylistSlot): List<Track> = Daylist.generate(repo, slot)
+
+    /** Generate Samples (~20 lagu trending/viral untuk swipe discovery). */
+    suspend fun samples(): List<Track> = Samples.generate(repo)
 
     /** Statistik Wrapped (tahun/bulan ini) dari history lokal. */
     suspend fun wrapped(year: Boolean): WrappedStats = Wrapped(dao).getStats(year)

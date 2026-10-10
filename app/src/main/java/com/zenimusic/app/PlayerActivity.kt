@@ -87,6 +87,10 @@ class PlayerActivity : Activity() {
     private lateinit var queueBox: LinearLayout
     private lateinit var tvQueueCount: TextView
 
+    // Indikator buffering di full player
+    private lateinit var bufferOverlay: FrameLayout
+    private lateinit var tvBufferStatus: TextView
+
     private var tracking = false
     private var currentTrack: Track? = null
     private var isFav = false
@@ -125,6 +129,7 @@ class PlayerActivity : Activity() {
                     tvDur.text = formatDurationMs(dur)
                 }
                 btnDl.alpha = if (cur == null) 0.4f else 1f
+                updateBufferOverlay(st)
             }
         }
         uiScope.launch {
@@ -270,6 +275,7 @@ class PlayerActivity : Activity() {
 
         buildLyricsOverlay()
         buildQueueOverlay()
+        buildBufferOverlay()
         val root = FrameLayout(this@PlayerActivity).apply {
             setBackgroundColor(BG)
             addView(playerUi, FrameLayout.LayoutParams(
@@ -277,6 +283,8 @@ class PlayerActivity : Activity() {
             addView(lyricsOverlay, FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
             addView(queueOverlay, FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+            addView(bufferOverlay, FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         }
         setContentView(root)
@@ -559,6 +567,49 @@ class PlayerActivity : Activity() {
             })
         }
         row
+    }
+
+    /**
+     * Overlay buffering: spinner + status di tengah layar saat loading/buffering.
+     * Tidak blokir tombol — user tetap bisa navigasi.
+     */
+    private fun buildBufferOverlay() = with(UiKit) {
+        bufferOverlay = FrameLayout(this@PlayerActivity).apply {
+            visibility = View.GONE
+            // Biarkan sentuhan tembus ke UI di bawahnya
+            isClickable = false
+            isFocusable = false
+        }
+        val center = vcol {
+            gravity = Gravity.CENTER
+            isClickable = false
+            isFocusable = false
+        }
+        val spinner = android.widget.ProgressBar(this@PlayerActivity).apply {
+            isIndeterminate = true
+            indeterminateTintList = android.content.res.ColorStateList.valueOf(ACCENT2)
+        }
+        center.addView(spinner, LinearLayout.LayoutParams(dp(48), dp(48)).apply {
+            gravity = Gravity.CENTER_HORIZONTAL
+        })
+        tvBufferStatus = textView("Memuat...", 13f, TEXT2).apply {
+            gravity = Gravity.CENTER
+            setPadding(0, dp(12), 0, 0)
+        }
+        center.addView(tvBufferStatus, matchWrap())
+        bufferOverlay.addView(center, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+            Gravity.CENTER))
+    }
+
+    /** Update visibilitas overlay buffering dari state player. */
+    private fun updateBufferOverlay(st: PlayerManager.UiState) {
+        if (!::bufferOverlay.isInitialized) return
+        val isBusy = st.loading || st.buffering
+        bufferOverlay.visibility = if (isBusy) View.VISIBLE else View.GONE
+        if (isBusy) {
+            tvBufferStatus.text = if (st.buffering) "Buffering..." else "Memuat..."
+        }
     }
 
     @Deprecated("Use OnBackPressedDispatcher")

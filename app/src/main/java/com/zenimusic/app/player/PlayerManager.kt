@@ -40,6 +40,7 @@ object PlayerManager {
         val playedIds: Set<String> = emptySet(),
         val repeatOne: Boolean = false,
         val loading: Boolean = false,
+        val buffering: Boolean = false,
         val error: String? = null
     )
 
@@ -69,7 +70,14 @@ object PlayerManager {
             }
 
             override fun onPlaybackStateChanged(playbackState: Int) {
-                if (playbackState == Player.STATE_ENDED) onTrackEnded()
+                when (playbackState) {
+                    Player.STATE_BUFFERING -> update { copy(buffering = true) }
+                    Player.STATE_READY, Player.STATE_IDLE -> update { copy(buffering = false) }
+                    Player.STATE_ENDED -> {
+                        update { copy(buffering = false) }
+                        onTrackEnded()
+                    }
+                }
             }
         })
         scope.launch {

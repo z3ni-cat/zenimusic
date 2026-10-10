@@ -160,6 +160,7 @@ class MainActivity : Activity() {
     private lateinit var btnMiniPrev: ImageView
     private lateinit var btnMiniPlay: ImageView
     private lateinit var btnMiniNext: ImageView
+    private lateinit var miniSpinner: android.widget.ProgressBar
 
     companion object {
         /** Nomor WhatsApp resmi ZeniMusic untuk info update (diberikan Khalid 2026-10-10). */
@@ -253,10 +254,17 @@ class MainActivity : Activity() {
         btnMiniPrev.setOnClickListener { PlayerManager.previous() }
         btnMiniPlay = iconAction(ZeniIcons.Kind.PLAY, TEXT, 40, 8)
         btnMiniPlay.setOnClickListener { PlayerManager.togglePlayPause() }
+        // Spinner buffering (tampil saat loading/buffering, gantikan tombol play)
+        miniSpinner = android.widget.ProgressBar(this@MainActivity).apply {
+            isIndeterminate = true
+            visibility = View.GONE
+            indeterminateTintList = android.content.res.ColorStateList.valueOf(ACCENT2)
+        }
         btnMiniNext = iconAction(ZeniIcons.Kind.NEXT, TEXT2, 40, 8)
         btnMiniNext.setOnClickListener { PlayerManager.next() }
         miniPlayer.addView(btnMiniPrev)
         miniPlayer.addView(btnMiniPlay)
+        miniPlayer.addView(miniSpinner, LinearLayout.LayoutParams(dp(40), dp(40)))
         miniPlayer.addView(btnMiniNext)
         miniPlayer.setOnClickListener {
             startActivity(Intent(this@MainActivity, PlayerActivity::class.java))
@@ -428,6 +436,27 @@ class MainActivity : Activity() {
         daylistWrap.addView(daylistCard, matchWrap())
         pane.addView(daylistWrap, matchWrap())
         refreshDaylistCard()
+
+        // ---- Samples: swipe discovery ala TikTok ----
+        val samplesWrap = vcol { setPadding(dp(12), dp(4), dp(12), dp(4)) }
+        val samplesCard = hrow {
+            background = cardBg()
+            setPadding(dp(16), dp(12), dp(16), dp(12))
+            gravity = Gravity.CENTER_VERTICAL
+            isClickable = true
+            isFocusable = true
+        }
+        val samplesTxt = vcol {}
+        samplesTxt.addView(textView("📱 Samples", 15f, TEXT, bold = true), matchWrap())
+        samplesTxt.addView(textView("Swipe untuk discover lagu baru", 12f, TEXT2), matchWrap())
+        samplesCard.add(samplesTxt, 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        val samplesGo = iconAction(ZeniIcons.Kind.CHEVRON_RIGHT, ACCENT2, 44, 10)
+        samplesCard.addView(samplesGo)
+        samplesCard.setOnClickListener {
+            startActivity(Intent(this@MainActivity, SamplesActivity::class.java))
+        }
+        samplesWrap.addView(samplesCard, matchWrap())
+        pane.addView(samplesWrap, matchWrap())
 
         progressBar = ProgressBar(this@MainActivity).apply { visibility = View.GONE }
         val pbWrap = LinearLayout(this@MainActivity).apply {
@@ -1301,7 +1330,15 @@ class MainActivity : Activity() {
         miniPlayer.visibility = if (cur == null) View.GONE else View.VISIBLE
         if (cur == null) return
         tvMiniTitle.text = cur.title
-        tvMiniChannel.text = if (st.loading) "Memuat..." else cur.channel
+        val isBusy = st.loading || st.buffering
+        tvMiniChannel.text = when {
+            st.loading -> "Memuat..."
+            st.buffering -> "Buffering..."
+            else -> cur.channel
+        }
+        // Tampilkan spinner saat loading/buffering, sembunyikan tombol play
+        miniSpinner.visibility = if (isBusy) View.VISIBLE else View.GONE
+        btnMiniPlay.visibility = if (isBusy) View.INVISIBLE else View.VISIBLE
         with(UiKit) {
             btnMiniPlay.setZeniIcon(
                 if (st.isPlaying) ZeniIcons.Kind.PAUSE else ZeniIcons.Kind.PLAY, TEXT)

@@ -313,43 +313,43 @@ class PlayerActivity : Activity() {
 
         // Opsi: shuffle / repeat / favorit / download — 48dp
         val optRow = hrow { gravity = Gravity.CENTER }
-        btnShuffle = circleIconButton(ZeniIcons.Kind.SHUFFLE, TEXT2, 48)
+        btnShuffle = circleIconButton(ZeniIcons.Kind.SHUFFLE, TEXT2, 44)
         btnShuffle.setOnClickListener { PlayerManager.toggleShuffle() }
-        btnRepeat = circleIconButton(ZeniIcons.Kind.REPEAT, TEXT2, 48)
+        btnRepeat = circleIconButton(ZeniIcons.Kind.REPEAT, TEXT2, 44)
         btnRepeat.setOnClickListener { PlayerManager.toggleRepeat() }
-        btnFav = circleIconButton(ZeniIcons.Kind.HEART, ACCENT2, 48)
+        btnFav = circleIconButton(ZeniIcons.Kind.HEART, ACCENT2, 44)
         btnFav.setOnClickListener {
             with(UiKit) { btnFav.pop() }
             currentTrack?.let { vm.toggleFavorite(it) }
         }
-        btnDl = circleIconButton(ZeniIcons.Kind.DOWNLOAD, TEXT, 48)
+        btnDl = circleIconButton(ZeniIcons.Kind.DOWNLOAD, TEXT, 44)
         btnDl.setOnClickListener { currentTrack?.let { vm.download(it) } }
-        btnLyrics = circleIconButton(ZeniIcons.Kind.LYRICS, TEXT2, 48)
+        btnLyrics = circleIconButton(ZeniIcons.Kind.LYRICS, TEXT2, 44)
         btnLyrics.setOnClickListener { openLyrics() }
-        val btnEq = circleIconButton(ZeniIcons.Kind.EQ, TEXT2, 48)
+        val btnEq = circleIconButton(ZeniIcons.Kind.EQ, TEXT2, 44)
         btnEq.setOnClickListener {
             with(UiKit) { btnEq.pop() }
             startActivity(android.content.Intent(this@PlayerActivity, EqualizerActivity::class.java))
         }
         optRow.addView(btnShuffle)
-        optRow.addView(View(this@PlayerActivity).apply { visibility = View.INVISIBLE },
-            LinearLayout.LayoutParams(dp(10), dp(1)))
+        optRow.addView(View(this@PlayerActivity),
+            LinearLayout.LayoutParams(0, dp(1), 1f))
         optRow.addView(btnRepeat)
-        optRow.addView(View(this@PlayerActivity).apply { visibility = View.INVISIBLE },
-            LinearLayout.LayoutParams(dp(10), dp(1)))
+        optRow.addView(View(this@PlayerActivity),
+            LinearLayout.LayoutParams(0, dp(1), 1f))
         optRow.addView(btnFav)
-        optRow.addView(View(this@PlayerActivity).apply { visibility = View.INVISIBLE },
-            LinearLayout.LayoutParams(dp(10), dp(1)))
+        optRow.addView(View(this@PlayerActivity),
+            LinearLayout.LayoutParams(0, dp(1), 1f))
         optRow.addView(btnDl)
-        optRow.addView(View(this@PlayerActivity).apply { visibility = View.INVISIBLE },
-            LinearLayout.LayoutParams(dp(10), dp(1)))
+        optRow.addView(View(this@PlayerActivity),
+            LinearLayout.LayoutParams(0, dp(1), 1f))
         optRow.addView(btnLyrics)
-        optRow.addView(View(this@PlayerActivity).apply { visibility = View.INVISIBLE },
-            LinearLayout.LayoutParams(dp(10), dp(1)))
+        optRow.addView(View(this@PlayerActivity),
+            LinearLayout.LayoutParams(0, dp(1), 1f))
         optRow.addView(btnEq)
-        optRow.addView(View(this@PlayerActivity).apply { visibility = View.INVISIBLE },
-            LinearLayout.LayoutParams(dp(10), dp(1)))
-        btnSleep = circleIconButton(ZeniIcons.Kind.TIMER, TEXT2, 48)
+        optRow.addView(View(this@PlayerActivity),
+            LinearLayout.LayoutParams(0, dp(1), 1f))
+        btnSleep = circleIconButton(ZeniIcons.Kind.TIMER, TEXT2, 44)
         btnSleep.setOnClickListener {
             with(UiKit) { btnSleep.pop() }
             showSleepDialog()

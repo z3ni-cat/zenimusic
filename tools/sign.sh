@@ -14,7 +14,7 @@ if [ -z "$JAVA_HOME" ]; then export JAVA_HOME="$HOME/workspace/jdk/jdk-17.0.20.1
 
 INFO="$HOME/workspace/zenimusic-apk/ZeniMusic-signing-key-info.txt"
 KS="$HOME/workspace/zenimusic-apk/ZeniMusic-signing.keystore"
-OUT="$HOME/workspace/zenimusic-apk/ZeniMusic-v3.1.0.apk"
+OUT="$HOME/workspace/zenimusic-apk/ZeniMusic-v3.1.1.apk"
 
 # Parse passwords (values never echoed)
 eval "$(python3 - "$INFO" <<'EOF'

@@ -129,6 +129,10 @@ class MainActivity : Activity() {
     private lateinit var qpRow: LinearLayout
     private var qpJob: Job? = null
 
+    // ---- Discovery (auto-hide saat mencari) ----
+    private lateinit var discoveryWrap: LinearLayout
+    private var discoveryVisible = true
+
     // ---- Zeni pane ----
     private lateinit var tvSponsorBlock: TextView
 
@@ -783,6 +787,14 @@ class MainActivity : Activity() {
         etSearch.setOnEditorActionListener { _, actionId, _ ->
             if (actionId == EditorInfo.IME_ACTION_SEARCH) { doSearch(); true } else false
         }
+        // Kolom dikosongkan → kartu discovery muncul lagi
+        etSearch.addTextChangedListener(object : android.text.TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun afterTextChanged(s: android.text.Editable?) {
+                if (s.isNullOrEmpty()) setDiscoveryVisible(true)
+            }
+        })
         searchCard.add(etSearch, 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         val gap = View(this@MainActivity)
         searchCard.add(gap, dp(8), dp(1))
@@ -793,6 +805,10 @@ class MainActivity : Activity() {
         searchCard.addView(btnSearch)
         searchWrap.addView(searchCard, matchWrap())
         pane.addView(searchWrap, matchWrap())
+
+        // Wadah kartu discovery: otomatis sembunyi saat hasil pencarian tampil
+        discoveryWrap = vcol {}
+        pane.addView(discoveryWrap, matchWrap())
 
         // ---- Quick Picks: rekomendasi dari riwayat dengar ----
         val qpWrap = vcol { setPadding(dp(12), dp(4), dp(12), dp(4)) }
@@ -806,7 +822,7 @@ class MainActivity : Activity() {
         qpScroll.addView(qpRow, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         qpWrap.addView(qpScroll, matchWrap())
-        pane.addView(qpWrap, matchWrap())
+        discoveryWrap.addView(qpWrap, matchWrap())
         loadQuickPicks()
 
         // ---- Zeni Wrapped: statistik dengerin ala Spotify Wrapped ----
@@ -826,7 +842,7 @@ class MainActivity : Activity() {
         wrappedCard.addView(wrappedGo)
         wrappedCard.setOnClickListener { openWrapped() }
         wrappedWrap.addView(wrappedCard, matchWrap())
-        pane.addView(wrappedWrap, matchWrap())
+        discoveryWrap.addView(wrappedWrap, matchWrap())
 
         // ---- Daylist: playlist otomatis sesuai jam ----
         val daylistWrap = vcol { setPadding(dp(12), dp(4), dp(12), dp(4)) }
@@ -847,7 +863,7 @@ class MainActivity : Activity() {
         daylistCard.addView(daylistPlay)
         daylistCard.setOnClickListener { openDaylist() }
         daylistWrap.addView(daylistCard, matchWrap())
-        pane.addView(daylistWrap, matchWrap())
+        discoveryWrap.addView(daylistWrap, matchWrap())
         refreshDaylistCard()
 
         // ---- Samples: swipe discovery ala TikTok ----
@@ -869,7 +885,7 @@ class MainActivity : Activity() {
             startActivity(Intent(this@MainActivity, SamplesActivity::class.java))
         }
         samplesWrap.addView(samplesCard, matchWrap())
-        pane.addView(samplesWrap, matchWrap())
+        discoveryWrap.addView(samplesWrap, matchWrap())
 
         progressBar = ProgressBar(this@MainActivity).apply { visibility = View.GONE }
         val pbWrap = LinearLayout(this@MainActivity).apply {
@@ -1780,7 +1796,38 @@ class MainActivity : Activity() {
 
     private fun doSearch() {
         hideKeyboard()
-        vm.search(etSearch.text.toString())
+        val q = etSearch.text.toString()
+        // Hasil pencarian tampil → kartu discovery sembunyi otomatis
+        if (q.isNotBlank()) setDiscoveryVisible(false)
+        vm.search(q)
+    }
+
+    /** Tampilkan/sembunyikan kartu discovery dengan animasi geser + fade. */
+    private fun setDiscoveryVisible(visible: Boolean) = with(UiKit) {
+        if (!::discoveryWrap.isInitialized || discoveryVisible == visible) return
+        discoveryVisible = visible
+        discoveryWrap.animate().cancel()
+        if (visible) {
+            discoveryWrap.visibility = View.VISIBLE
+            discoveryWrap.translationY = -dp(24).toFloat()
+            discoveryWrap.alpha = 0f
+            discoveryWrap.animate()
+                .translationY(0f)
+                .alpha(1f)
+                .setDuration(250)
+                .setInterpolator(android.view.animation.DecelerateInterpolator())
+                .start()
+        } else {
+            discoveryWrap.animate()
+                .translationY(-dp(24).toFloat())
+                .alpha(0f)
+                .setDuration(220)
+                .setInterpolator(android.view.animation.AccelerateInterpolator())
+                .withEndAction {
+                    if (!discoveryVisible) discoveryWrap.visibility = View.GONE
+                }
+                .start()
+        }
     }
 
     private fun hideKeyboard() {

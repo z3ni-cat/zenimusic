@@ -64,6 +64,7 @@ class SamplesActivity : Activity() {
     private var samples: List<Track> = emptyList()
     private var index = 0
     private var loadJob: Job? = null
+    private lateinit var gestureDetector: GestureDetector
     private var favJob: Job? = null
     private var isFav = false
     private var animating = false
@@ -282,8 +283,9 @@ class SamplesActivity : Activity() {
         root.addView(cardWrap, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
 
-        // Gesture: swipe vertikal
-        val detector = GestureDetector(this@SamplesActivity,
+        // Gesture: swipe vertikal — pakai dispatchTouchEvent agar semua sentuhan
+        // (termasuk di atas thumbnail yang clickable) terbaca oleh detector.
+        gestureDetector = GestureDetector(this@SamplesActivity,
             object : GestureDetector.SimpleOnGestureListener() {
                 override fun onFling(
                     e1: MotionEvent?, e2: MotionEvent,
@@ -291,7 +293,7 @@ class SamplesActivity : Activity() {
                 ): Boolean {
                     val dy = (e2.y - (e1?.y ?: e2.y))
                     // Swipe vertikal dominan
-                    if (kotlin.math.abs(dy) > 120 &&
+                    if (kotlin.math.abs(dy) > 80 &&
                         kotlin.math.abs(velocityY) > kotlin.math.abs(velocityX)) {
                         if (dy < 0) next() else prev()
                         return true
@@ -299,9 +301,15 @@ class SamplesActivity : Activity() {
                     return false
                 }
             })
-        root.setOnTouchListener { _, ev -> detector.onTouchEvent(ev) }
 
         setContentView(root)
+    }
+
+    override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        if (::gestureDetector.isInitialized) {
+            gestureDetector.onTouchEvent(ev)
+        }
+        return super.dispatchTouchEvent(ev)
     }
 
     override fun onDestroy() {

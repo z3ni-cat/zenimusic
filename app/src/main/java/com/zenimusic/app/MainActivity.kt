@@ -30,9 +30,13 @@ import android.widget.Toast
 import androidx.lifecycle.viewModelScope
 import com.zenimusic.app.data.db.PlaylistEntity
 import com.zenimusic.app.data.model.Track
+import com.zenimusic.app.data.repo.Daylist
+import com.zenimusic.app.data.repo.DaylistSlot
 import com.zenimusic.app.data.repo.PODCAST_EN
 import com.zenimusic.app.data.repo.PODCAST_ID
 import com.zenimusic.app.data.repo.PodcastChannel
+import com.zenimusic.app.data.repo.WrappedStats
+import android.graphics.drawable.GradientDrawable
 import com.zenimusic.app.player.PlayerManager
 import com.zenimusic.app.ui.AppViewModel
 import com.zenimusic.app.ui.ImageLoader
@@ -70,6 +74,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import java.io.PrintWriter
@@ -113,6 +118,21 @@ class MainActivity : Activity() {
     private lateinit var progressBar: ProgressBar
     private lateinit var tvSearchError: TextView
     private lateinit var searchAdapter: TrackAdapter
+
+    // ---- Daylist ----
+    private lateinit var daylistCard: LinearLayout
+    private lateinit var tvDaylistTitle: TextView
+    private lateinit var tvDaylistSub: TextView
+    private var daylistJob: Job? = null
+    private var daylistCacheSlot: DaylistSlot? = null
+    private var daylistCacheTracks: List<Track> = emptyList()
+
+    // ---- Zeni Wrapped ----
+    private var wrappedOverlay: FrameLayout? = null
+    private var wrappedContent: LinearLayout? = null
+    private var wrappedYear = true
+    private var wrappedJob: Job? = null
+    private var wrappedStats: WrappedStats? = null
 
     // ---- Library pane ----
     private var libTab = 0 // 0=playlist 1=favorit 2=riwayat 3=unduhan
@@ -368,6 +388,47 @@ class MainActivity : Activity() {
         searchWrap.addView(searchCard, matchWrap())
         pane.addView(searchWrap, matchWrap())
 
+        // ---- Zeni Wrapped: statistik dengerin ala Spotify Wrapped ----
+        val wrappedWrap = vcol { setPadding(dp(12), dp(4), dp(12), dp(4)) }
+        val wrappedCard = hrow {
+            background = cardBg()
+            setPadding(dp(16), dp(12), dp(16), dp(12))
+            gravity = Gravity.CENTER_VERTICAL
+            isClickable = true
+            isFocusable = true
+        }
+        val wrappedTxt = vcol {}
+        wrappedTxt.addView(textView("🎧 Zeni Wrapped", 15f, TEXT, bold = true), matchWrap())
+        wrappedTxt.addView(textView("Statistik dengerinmu", 12f, TEXT2), matchWrap())
+        wrappedCard.add(wrappedTxt, 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        val wrappedGo = iconAction(ZeniIcons.Kind.CHEVRON_RIGHT, ACCENT2, 44, 10)
+        wrappedCard.addView(wrappedGo)
+        wrappedCard.setOnClickListener { openWrapped() }
+        wrappedWrap.addView(wrappedCard, matchWrap())
+        pane.addView(wrappedWrap, matchWrap())
+
+        // ---- Daylist: playlist otomatis sesuai jam ----
+        val daylistWrap = vcol { setPadding(dp(12), dp(4), dp(12), dp(4)) }
+        daylistCard = hrow {
+            background = cardBg()
+            setPadding(dp(16), dp(12), dp(16), dp(12))
+            gravity = Gravity.CENTER_VERTICAL
+            isClickable = true
+            isFocusable = true
+        }
+        val daylistTxt = vcol {}
+        tvDaylistTitle = textView("📻 Daylist", 15f, TEXT, bold = true)
+        tvDaylistSub = textView("", 12f, TEXT2)
+        daylistTxt.addView(tvDaylistTitle, matchWrap())
+        daylistTxt.addView(tvDaylistSub, matchWrap())
+        daylistCard.add(daylistTxt, 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        val daylistPlay = iconAction(ZeniIcons.Kind.PLAY, ACCENT2, 44, 10)
+        daylistCard.addView(daylistPlay)
+        daylistCard.setOnClickListener { openDaylist() }
+        daylistWrap.addView(daylistCard, matchWrap())
+        pane.addView(daylistWrap, matchWrap())
+        refreshDaylistCard()
+
         progressBar = ProgressBar(this@MainActivity).apply { visibility = View.GONE }
         val pbWrap = LinearLayout(this@MainActivity).apply {
             gravity = Gravity.CENTER
@@ -399,6 +460,308 @@ class MainActivity : Activity() {
         pane.addView(lv, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
         return pane
+    }
+
+    /** Perbarui label kartu Daylist sesuai slot waktu aktif. */
+    private fun refreshDaylistCard() {
+        if (!::tvDaylistTitle.isInitialized) return
+        val slot = Daylist.currentSlot()
+        tvDaylistTitle.text = "📻 Daylist"
+        tvDaylistSub.text = "${slot.emoji} ${slot.name} • ${slot.label} WIB"
+    }
+
+    /** Tap kartu Daylist → generate (sekali per slot per sesi) → putar. */
+    private fun openDaylist() {
+        val slot = Daylist.currentSlot()
+        // Cache: pakai hasil generate sebelumnya bila slot sama
+        if (daylistCacheSlot == slot && daylistCacheTracks.isNotEmpty()) {
+            vm.play(daylistCacheTracks.first(), daylistCacheTracks)
+            vm.showToast("Daylist ${slot.name} siap!")
+            return
+        }
+        daylistJob?.cancel()
+        tvDaylistSub.text = "Membuat Daylist ${slot.name}…"
+        daylistCard.isClickable = false
+        daylistJob = uiScope.launch {
+            try {
+                val tracks = vm.daylist(slot)
+                if (tracks.isEmpty()) {
+                    vm.showToast("Daylist kosong, coba lagi.")
+                    refreshDaylistCard()
+                    return@launch
+                }
+                daylistCacheSlot = slot
+                daylistCacheTracks = tracks
+                vm.play(tracks.first(), tracks)
+                vm.showToast("Daylist ${slot.name} siap!")
+            } catch (e: Exception) {
+                vm.showToast("Gagal membuat Daylist.")
+            } finally {
+                daylistCard.isClickable = true
+                refreshDaylistCard()
+            }
+        }
+    }
+
+    // ================= Zeni Wrapped =================
+
+    private fun openWrapped() {
+        if (wrappedOverlay == null) buildWrappedOverlay()
+        wrappedOverlay?.visibility = View.VISIBLE
+        loadWrapped()
+    }
+
+    private fun closeWrapped() {
+        wrappedOverlay?.visibility = View.GONE
+        wrappedJob?.cancel()
+    }
+
+    private fun buildWrappedOverlay() = with(UiKit) {
+        val overlay = FrameLayout(this@MainActivity).apply {
+            setBackgroundColor(BG)
+            visibility = View.GONE
+        }
+        val col = vcol { setPadding(dp(20), dp(12), dp(20), dp(20)) }
+        // Header
+        val topRow = hrow { gravity = Gravity.CENTER_VERTICAL }
+        val btnClose = iconAction(ZeniIcons.Kind.CLOSE, TEXT2, 40, 10)
+        btnClose.setOnClickListener { closeWrapped() }
+        topRow.addView(btnClose)
+        topRow.addView(textView("🎧 Zeni Wrapped", 18f, TEXT, bold = true).apply {
+            setPadding(dp(12), 0, 0, 0)
+        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        col.addView(topRow, matchWrap())
+        // Toggle tahun/bulan
+        val segRow = hrow { gravity = Gravity.CENTER }
+        val btnYear = accentPillButton("Tahun ini", 13f)
+        val btnMonth = accentPillButton("Bulan ini", 13f)
+        btnYear.setOnClickListener {
+            wrappedYear = true; styleSegment(btnYear, true); styleSegment(btnMonth, false); loadWrapped()
+        }
+        btnMonth.setOnClickListener {
+            wrappedYear = false; styleSegment(btnMonth, true); styleSegment(btnYear, false); loadWrapped()
+        }
+        styleSegment(btnYear, true); styleSegment(btnMonth, false)
+        segRow.addView(btnYear, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+            marginEnd = dp(8)
+        })
+        segRow.addView(btnMonth, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+            marginStart = dp(8)
+        })
+        val segWrap = LinearLayout(this@MainActivity).apply { setPadding(0, dp(12), 0, dp(4)) }
+        segWrap.addView(segRow, matchWrap())
+        col.addView(segWrap, matchWrap())
+        // Konten scroll
+        val scroll = ScrollView(this@MainActivity).apply { isFillViewport = true }
+        wrappedContent = vcol { setPadding(0, dp(8), 0, dp(8)) }
+        scroll.addView(wrappedContent, ViewGroup.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        col.addView(scroll, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+        // Tombol bagikan
+        val btnShare = accentPillButton("Bagikan sebagai gambar", 14f)
+        btnShare.setOnClickListener { shareWrapped() }
+        val shareWrap = LinearLayout(this@MainActivity).apply {
+            gravity = Gravity.CENTER; setPadding(0, dp(12), 0, 0)
+        }
+        shareWrap.addView(btnShare, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        col.addView(shareWrap, matchWrap())
+
+        overlay.addView(col, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        wrappedOverlay = overlay
+        addContentView(overlay, ViewGroup.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+    }
+
+    private fun loadWrapped() = with(UiKit) {
+        val box = wrappedContent ?: return
+        box.removeAllViews()
+        box.addView(textView("Menghitung…", 14f, TEXT2).apply {
+            gravity = Gravity.CENTER; setPadding(0, dp(32), 0, 0)
+        }, matchWrap())
+        wrappedJob?.cancel()
+        wrappedJob = uiScope.launch {
+            try {
+                val stats = vm.wrapped(wrappedYear)
+                wrappedStats = stats
+                renderWrapped(stats)
+            } catch (e: Exception) {
+                box.removeAllViews()
+                box.addView(textView("Gagal memuat statistik.", 14f, TEXT2).apply {
+                    gravity = Gravity.CENTER; setPadding(0, dp(32), 0, 0)
+                }, matchWrap())
+            }
+        }
+    }
+
+    /** Kartu gradient colorful untuk statistik. */
+    private fun statCard(top: Int, bottom: Int, title: String, big: String, sub: String): LinearLayout =
+        with(UiKit) {
+            val card = vcol {
+                background = GradientDrawable(
+                    GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(top, bottom)).apply {
+                    cornerRadius = dp(20).toFloat()
+                }
+                setPadding(dp(20), dp(20), dp(20), dp(20))
+            }
+            card.addView(textView(title, 13f, 0xFFFFFFFF.toInt()).apply { alpha = 0.85f }, matchWrap())
+            card.addView(textView(big, 34f, 0xFFFFFFFF.toInt(), bold = true).apply {
+                setPadding(0, dp(8), 0, dp(4))
+            }, matchWrap())
+            card.addView(textView(sub, 13f, 0xFFFFFFFF.toInt()).apply { alpha = 0.85f }, matchWrap())
+            val lp = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            lp.bottomMargin = dp(12)
+            card.layoutParams = lp
+            card
+        }
+
+    private fun renderWrapped(s: WrappedStats) = with(UiKit) {
+        val box = wrappedContent ?: return
+        box.removeAllViews()
+        if (s.totalPlays == 0) {
+            box.addView(textView("Belum ada riwayat putar di periode ini.\nPutar lagu dulu yuk! 🎵", 14f, TEXT2).apply {
+                gravity = Gravity.CENTER; setPadding(0, dp(48), 0, 0)
+            }, matchWrap())
+            return
+        }
+        box.addView(textView(s.label, 13f, TEXT2).apply {
+            setPadding(0, 0, 0, dp(12))
+        }, matchWrap())
+        // (a) Total menit — ungu
+        box.addView(statCard(0xFF8B5CF6.toInt(), 0xFFEC4899.toInt(),
+            "WAKTU DENGERIN", "${s.totalMinutes} menit", "${s.totalPlays} lagu diputar"))
+        // (b) Top 1 lagu — teal
+        s.topSongs.firstOrNull()?.let { t ->
+            box.addView(statCard(0xFF14B8A6.toInt(), 0xFF0EA5E9.toInt(),
+                "TOP 1 LAGU", t.title, "${t.subtitle} • ${t.count}x diputar"))
+        }
+        // (c) Top 1 artis — oranye
+        s.topArtists.firstOrNull()?.let { a ->
+            box.addView(statCard(0xFFF97316.toInt(), 0xFFEF4444.toInt(),
+                "TOP 1 ARTIS", a.title, "${a.count}x diputar"))
+        }
+        // (d) Top 5 lagu
+        if (s.topSongs.size > 1) {
+            box.addView(textView("TOP LAGU", 12f, TEXT2, bold = true).apply {
+                setPadding(0, dp(8), 0, dp(8))
+            }, matchWrap())
+            s.topSongs.forEachIndexed { i, t ->
+                box.addView(rankRow(i + 1, t.title, "${t.subtitle} • ${t.count}x"), matchWrap())
+            }
+        }
+        // Top 5 artis
+        if (s.topArtists.size > 1) {
+            box.addView(textView("TOP ARTIS", 12f, TEXT2, bold = true).apply {
+                setPadding(0, dp(16), 0, dp(8))
+            }, matchWrap())
+            s.topArtists.forEachIndexed { i, a ->
+                box.addView(rankRow(i + 1, a.title, "${a.count}x diputar"), matchWrap())
+            }
+        }
+    }
+
+    private fun rankRow(rank: Int, title: String, sub: String): LinearLayout = with(UiKit) {
+        val row = hrow {
+            background = cardBg()
+            setPadding(dp(14), dp(10), dp(14), dp(10))
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        row.addView(textView("$rank", 16f, ACCENT2, bold = true).apply {
+            gravity = Gravity.CENTER
+        }, LinearLayout.LayoutParams(dp(32), ViewGroup.LayoutParams.WRAP_CONTENT))
+        val txt = vcol { setPadding(dp(8), 0, 0, 0) }
+        txt.addView(textView(title, 14f, TEXT, bold = true).apply {
+            maxLines = 1; ellipsize = TextUtils.TruncateAt.END
+        }, matchWrap())
+        txt.addView(textView(sub, 12f, TEXT2).apply {
+            maxLines = 1; ellipsize = TextUtils.TruncateAt.END
+        }, matchWrap())
+        row.add(txt, 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        val lp = LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        lp.bottomMargin = dp(8)
+        row.layoutParams = lp
+        row
+    }
+
+    /** Render kartu Wrapped jadi gambar 1080x1920 lalu bagikan via FileProvider. */
+    private fun shareWrapped() {
+        val s = wrappedStats ?: run { vm.showToast("Belum ada data untuk dibagikan."); return }
+        if (s.totalPlays == 0) { vm.showToast("Belum ada data untuk dibagikan."); return }
+        uiScope.launch(Dispatchers.IO) {
+            try {
+                val bmp = renderWrappedBitmap(s)
+                val file = java.io.File(cacheDir, "zeni-wrapped.png")
+                java.io.FileOutputStream(file).use { out ->
+                    bmp.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, out)
+                }
+                val uri = androidx.core.content.FileProvider.getUriForFile(
+                    this@MainActivity, "com.zenimusic.app.fileprovider", file)
+                withContext(Dispatchers.Main) {
+                    val send = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                        type = "image/png"
+                        putExtra(android.content.Intent.EXTRA_STREAM, uri)
+                        addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    }
+                    startActivity(android.content.Intent.createChooser(send, "Bagikan Zeni Wrapped"))
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) { vm.showToast("Gagal membagikan: ${e.message}") }
+            }
+        }
+    }
+
+    /** Gambar kartu 1080x1920: gradient bg + statistik + branding. */
+    private fun renderWrappedBitmap(s: WrappedStats): android.graphics.Bitmap {
+        val w = 1080; val h = 1920
+        val bmp = android.graphics.Bitmap.createBitmap(w, h, android.graphics.Bitmap.Config.ARGB_8888)
+        val c = android.graphics.Canvas(bmp)
+        // Background gradient ungu → pink
+        val bgPaint = android.graphics.Paint().apply {
+            shader = android.graphics.LinearGradient(0f, 0f, 0f, h.toFloat(),
+                0xFF1A1626.toInt(), 0xFF2D1B4E.toInt(), android.graphics.Shader.TileMode.CLAMP)
+        }
+        c.drawRect(0f, 0f, w.toFloat(), h.toFloat(), bgPaint)
+        // Dekorasi lingkaran
+        val deco = android.graphics.Paint().apply { alpha = 40 }
+        deco.color = 0xFF8B5CF6.toInt()
+        c.drawCircle(w * 0.85f, h * 0.12f, 220f, deco)
+        deco.color = 0xFFEC4899.toInt()
+        c.drawCircle(w * 0.12f, h * 0.85f, 260f, deco)
+
+        fun text(y: Float, str: String, size: Float, bold: Boolean, alpha: Int = 255) {
+            val p = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                color = 0xFFFFFFFF.toInt(); textSize = size; textAlign = android.graphics.Paint.Align.CENTER
+                this.alpha = alpha
+                typeface = if (bold) android.graphics.Typeface.DEFAULT_BOLD else android.graphics.Typeface.DEFAULT
+            }
+            // Potong teks yang terlalu panjang
+            var t = str
+            while (p.measureText(t) > w - 160 && t.length > 10) t = t.dropLast(4) + "…"
+            c.drawText(t, w / 2f, y, p)
+        }
+
+        var y = 320f
+        text(y, "🎧 Zeni Wrapped", 72f, true); y += 110f
+        text(y, s.label, 44f, false, 200); y += 200f
+        text(y, "${s.totalMinutes}", 150f, true); y += 110f
+        text(y, "menit dengerin musik", 44f, false, 200); y += 90f
+        text(y, "${s.totalPlays} lagu diputar", 40f, false, 180); y += 220f
+        s.topSongs.firstOrNull()?.let { t ->
+            text(y, "TOP 1 LAGU", 36f, true, 200); y += 80f
+            text(y, t.title, 52f, true); y += 80f
+            text(y, "${t.subtitle} • ${t.count}x", 40f, false, 180); y += 200f
+        }
+        s.topArtists.firstOrNull()?.let { a ->
+            text(y, "TOP 1 ARTIS", 36f, true, 200); y += 80f
+            text(y, a.title, 52f, true); y += 80f
+            text(y, "${a.count}x diputar", 40f, false, 180); y += 200f
+        }
+        text(h - 140f, "Dibuat dengan ZeniMusic", 36f, false, 150)
+        return bmp
     }
 
     // ================= Halaman Playlist (koleksi) =================
@@ -740,6 +1103,7 @@ class MainActivity : Activity() {
         libraryPane.visibility = if (idx == 2) View.VISIBLE else View.GONE
         podcastPane.visibility = if (idx == 3) View.VISIBLE else View.GONE
         if (idx == 3) ensurePodcastHome()
+        if (idx == 1) refreshDaylistCard()
     }
 
     private fun selectLibTab(idx: Int) = with(UiKit) {
@@ -994,9 +1358,19 @@ class MainActivity : Activity() {
     override fun onDestroy() {
         playlistSongsJob?.cancel()
         podcastJob?.cancel()
+        wrappedJob?.cancel()
         if (::uiScope.isInitialized) uiScope.cancel()
         if (::vm.isInitialized) vm.viewModelScope.cancel()
         super.onDestroy()
+    }
+
+    @Deprecated("Use OnBackPressedDispatcher")
+    override fun onBackPressed() {
+        if (wrappedOverlay?.visibility == View.VISIBLE) {
+            closeWrapped()
+        } else {
+            super.onBackPressed()
+        }
     }
 
     // ---- Adapter daftar playlist (card) ----

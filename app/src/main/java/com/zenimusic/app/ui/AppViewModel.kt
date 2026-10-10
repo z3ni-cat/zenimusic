@@ -8,7 +8,11 @@ import com.zenimusic.app.data.db.FavoriteEntity
 import com.zenimusic.app.data.db.PlaylistEntity
 import com.zenimusic.app.data.db.PlaylistSongCrossRef
 import com.zenimusic.app.data.model.Track
+import com.zenimusic.app.data.repo.Daylist
+import com.zenimusic.app.data.repo.DaylistSlot
 import com.zenimusic.app.data.repo.PodcastChannel
+import com.zenimusic.app.data.repo.Wrapped
+import com.zenimusic.app.data.repo.WrappedStats
 import com.zenimusic.app.player.PlayerManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -55,6 +59,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** Feed channel YouTube untuk tab Podcast (fresh fetch = auto-update episode baru). */
     suspend fun channelFeed(channel: PodcastChannel): Triple<String, String, List<Track>> =
         repo.channelFeed(channel)
+
+    /** Generate Daylist (~20 lagu sesuai slot waktu). */
+    suspend fun daylist(slot: DaylistSlot): List<Track> = Daylist.generate(repo, slot)
+
+    /** Statistik Wrapped (tahun/bulan ini) dari history lokal. */
+    suspend fun wrapped(year: Boolean): WrappedStats = Wrapped(dao).getStats(year)
+
+    fun showToast(msg: String) { _toast.value = msg }
 
     // ---- Library ----
     val playlists = dao.playlists()

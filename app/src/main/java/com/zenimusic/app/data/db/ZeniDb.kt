@@ -285,6 +285,36 @@ class ZeniDb(context: Context) :
         )
     }
 
+    /** Baris mentah untuk statistik Wrapped: judul, channel, durasi, jumlah putar. */
+    data class WrappedRow(
+        val title: String,
+        val channel: String,
+        val durationSec: Long,
+        val plays: Int
+    )
+
+    suspend fun wrappedStats(sinceMs: Long): List<WrappedRow> = withContext(Dispatchers.IO) {
+        val out = ArrayList<WrappedRow>()
+        readableDatabase.rawQuery(
+            """SELECT s.title, s.channel, s.durationSec, COUNT(h.id) AS plays
+               FROM history h INNER JOIN songs s ON s.videoId = h.videoId
+               WHERE h.playedAt >= ? GROUP BY h.videoId ORDER BY plays DESC""",
+            arrayOf(sinceMs.toString())
+        ).use { c ->
+            while (c.moveToNext()) {
+                out.add(
+                    WrappedRow(
+                        title = c.getString(0) ?: "",
+                        channel = c.getString(1) ?: "",
+                        durationSec = c.getLong(2),
+                        plays = c.getInt(3)
+                    )
+                )
+            }
+        }
+        out
+    }
+
     // ---- Downloaded ----
     fun downloaded(): Flow<List<SongEntity>> = liveQuery { db ->
         querySongs(

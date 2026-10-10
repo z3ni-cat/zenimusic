@@ -1,5 +1,6 @@
 package com.zenimusic.app.player
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
@@ -76,6 +77,15 @@ class PlaybackService : MediaSessionService() {
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = session
+
+    /**
+     * Musik TIDAK boleh mati saat aplikasi di-swipe dari recent apps (seperti Spotify/YMusic).
+     * Default Media3: stopSelf() jika service tidak sedang foreground — itu yang membunuh musik
+     * tepat di jeda antar lagu / saat pause. Jadi sengaja tidak memanggil super.
+     */
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        // Biarkan service tetap hidup; musik lanjut jalan di background.
+    }
 
     override fun onDestroy() {
         session?.let {

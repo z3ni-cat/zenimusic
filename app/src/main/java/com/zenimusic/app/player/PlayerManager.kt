@@ -55,6 +55,9 @@ object PlayerManager {
     val uiState: StateFlow<UiState> = _uiState
 
     private var resolveJob: Job? = null
+    /** Lagu yang harus diputar begitu service/player kembali hidup (recovery). */
+    private var pendingResumeTrack: Track? = null
+    private var positionLoopStarted = false
 
     // ============ Sleep timer: flag fade agar tidak rebutan volume ============
     /** True saat sleep timer sedang fade-out; crossfade harus diam. */
@@ -155,6 +158,10 @@ object PlayerManager {
                 }
             }
         })
+        // Service (kembali) hidup: lanjutkan lagu yang tertunda dipulihkan, kalau ada.
+        pendingResumeTrack?.let { pendingResumeTrack = null; resolveAndPlay(it) }
+        if (positionLoopStarted) return
+        positionLoopStarted = true
         scope.launch {
             while (isActive) {
                 delay(500)
@@ -168,6 +175,9 @@ object PlayerManager {
                     }
                     // Crossfade: fade out halus saat lagu hampir selesai
                     applyCrossfadeOut(pl)
+                } else if (_uiState.value.isPlaying) {
+                    // Player hilang tapi tampilan masih "playing": koreksi agar tombol tidak stuck.
+                    update { copy(isPlaying = false, buffering = false) }
                 }
             }
         }
@@ -240,6 +250,11 @@ object PlayerManager {
     fun releasePlayer() {
         player?.release()
         player = null
+        pendingResumeTrack = null
+        // Jangan biarkan tombol stuck di PAUSE: player sudah tidak ada.
+        if (_uiState.value.isPlaying || _uiState.value.buffering) {
+            update { copy(isPlaying = false, buffering = false) }
+        }
     }
 
     fun playTrack(track: Track, queue: List<Track>) {
@@ -320,8 +335,33 @@ object PlayerManager {
     }
 
     fun togglePlayPause() {
-        val pl = player ?: return
+        val pl = player
+        val cur = _uiState.value.current
+        // Player hilang / kosong padahal ada lagu (service sempat mati): pulihkan dulu,
+        // jangan diam saja — diam itu yang bikin tombol macet di PAUSE.
+        if ((pl == null || pl.currentMediaItem == null) && cur != null) {
+            recoverAndPlay(cur)
+            return
+        }
+        if (pl == null) return
         if (pl.isPlaying) pl.pause() else pl.play()
+    }
+
+    /** Hidupkan ulang service bila perlu, lalu putar lagi lagu yang sedang berjalan. */
+    private fun recoverAndPlay(track: Track) {
+        update { copy(isPlaying = false, buffering = false, loading = true, error = null) }
+        if (player == null) {
+            pendingResumeTrack = track
+            try {
+                appContext.startService(Intent(appContext, PlaybackService::class.java))
+            } catch (e: Exception) {
+                pendingResumeTrack = null
+                update { copy(loading = false, error = "Tidak bisa menghidupkan ulang pemutar") }
+            }
+            // attachPlayer() akan memutar pendingResumeTrack begitu service hidup.
+        } else {
+            resolveAndPlay(track)
+        }
     }
 
     fun seekTo(ms: Long) {

@@ -21,7 +21,7 @@ object ZeniIcons {
         DOWNLOAD, PLUS, CLOSE, TRASH,
         SEARCH, HOME, PLAYLIST, INFO, CHAT,
         CHEVRON_RIGHT, CHEVRON_LEFT,
-        SHUFFLE, REPEAT, LYRICS
+        SHUFFLE, REPEAT, LYRICS, QUEUE
     }
 
     private const val S = 96f
@@ -184,6 +184,16 @@ object ZeniIcons {
                 c.drawLine(28f, 34f, 68f, 34f, stroke)
                 c.drawLine(28f, 48f, 68f, 48f, stroke)
                 c.drawLine(28f, 62f, 56f, 62f, stroke)
+            }
+            Kind.QUEUE -> {
+                // Daftar antrian: garis-garis + segitiga play kecil.
+                c.drawLine(38f, 32f, 70f, 32f, stroke)
+                c.drawLine(38f, 48f, 70f, 48f, stroke)
+                c.drawLine(38f, 64f, 70f, 64f, stroke)
+                val p = Path().apply {
+                    moveTo(24f, 26f); lineTo(24f, 38f); lineTo(34f, 32f); close()
+                }
+                c.drawPath(p, fillRound)
             }
         }
         return BitmapDrawable(ctx.resources, bmp)

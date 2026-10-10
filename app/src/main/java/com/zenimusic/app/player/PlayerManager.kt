@@ -152,6 +152,24 @@ object PlayerManager {
         resolveAndPlay(s.queue[idx])
     }
 
+    /** Lompat ke lagu di posisi index antrian. */
+    fun playAt(index: Int) {
+        val s = _uiState.value
+        if (index !in s.queue.indices) return
+        val newPlayed = s.playedIds + s.queue[index].videoId
+        update { copy(queueIndex = index, playedIds = newPlayed) }
+        resolveAndPlay(s.queue[index])
+    }
+
+    /** Hapus lagu dari antrian (tidak bisa hapus yang sedang diputar). */
+    fun removeAt(index: Int) {
+        val s = _uiState.value
+        if (index !in s.queue.indices || index == s.queueIndex) return
+        val newQueue = s.queue.toMutableList().apply { removeAt(index) }
+        val newIdx = if (index < s.queueIndex) s.queueIndex - 1 else s.queueIndex
+        update { copy(queue = newQueue, queueIndex = newIdx.coerceIn(0, (newQueue.size - 1).coerceAtLeast(0))) }
+    }
+
     fun togglePlayPause() {
         val pl = player ?: return
         if (pl.isPlaying) pl.pause() else pl.play()

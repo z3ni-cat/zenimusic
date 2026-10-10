@@ -82,6 +82,11 @@ class PlayerActivity : Activity() {
     private var lyricsSync: Runnable? = null
     private val lyricsHandler = android.os.Handler(android.os.Looper.getMainLooper())
 
+    // Overlay antrian
+    private lateinit var queueOverlay: FrameLayout
+    private lateinit var queueBox: LinearLayout
+    private lateinit var tvQueueCount: TextView
+
     private var tracking = false
     private var currentTrack: Track? = null
     private var isFav = false
@@ -170,6 +175,9 @@ class PlayerActivity : Activity() {
         btnClose.setOnClickListener { finish() }
         topRow.addView(btnClose)
         topRow.add(View(this@PlayerActivity), 0, dp(1), 1f)
+        val btnQueue = iconAction(ZeniIcons.Kind.QUEUE, TEXT2, 40, 10)
+        btnQueue.setOnClickListener { openQueue() }
+        topRow.addView(btnQueue)
         playerUi.addView(topRow, matchWrap())
 
         // Artwork: rounded 24dp + shadow via outlineProvider + elevation
@@ -261,11 +269,14 @@ class PlayerActivity : Activity() {
         playerUi.addView(optRow, matchWrap())
 
         buildLyricsOverlay()
+        buildQueueOverlay()
         val root = FrameLayout(this@PlayerActivity).apply {
             setBackgroundColor(BG)
             addView(playerUi, FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
             addView(lyricsOverlay, FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+            addView(queueOverlay, FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         }
         setContentView(root)
@@ -422,10 +433,140 @@ class PlayerActivity : Activity() {
         super.onDestroy()
     }
 
+    /**
+     * Overlay antrian: lihat lagu yang akan diputar, tap = lompat, X = hapus.
+     */
+    private fun buildQueueOverlay() = with(UiKit) {
+        queueOverlay = FrameLayout(this@PlayerActivity).apply {
+            setBackgroundColor(BG)
+            visibility = View.GONE
+        }
+        val col = vcol {
+            setBackgroundColor(BG)
+            setPadding(dp(24), dp(12), dp(24), dp(24))
+        }
+        val topRow = hrow {}
+        val btnClose = iconAction(ZeniIcons.Kind.CLOSE, TEXT2, 40, 10)
+        btnClose.setOnClickListener { closeQueue() }
+        topRow.addView(btnClose)
+        val tvTitle = textView("Antrian", 17f, TEXT, bold = true).apply {
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(12), 0, 0, 0)
+        }
+        topRow.addView(tvTitle, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        tvQueueCount = textView("", 13f, TEXT2).apply { gravity = Gravity.CENTER_VERTICAL }
+        topRow.addView(tvQueueCount, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        col.addView(topRow, matchWrap())
+
+        val scroll = ScrollView(this@PlayerActivity).apply { isFillViewport = true }
+        queueBox = vcol {
+            setPadding(0, dp(12), 0, dp(24))
+        }
+        scroll.addView(queueBox, ViewGroup.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        col.addView(scroll, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+
+        queueOverlay.addView(col, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+    }
+
+    private fun openQueue() {
+        queueOverlay.visibility = View.VISIBLE
+        refreshQueue()
+    }
+
+    private fun closeQueue() {
+        queueOverlay.visibility = View.GONE
+    }
+
+    private fun refreshQueue() = with(UiKit) {
+        queueBox.removeAllViews()
+        val st = PlayerManager.uiState.value
+        val q = st.queue
+        val cur = st.queueIndex
+        tvQueueCount.text = if (q.isEmpty()) "" else "${q.size} lagu"
+
+        if (q.isEmpty()) {
+            queueBox.addView(textView("Antrian kosong.", 14f, TEXT2).apply {
+                gravity = Gravity.CENTER
+                setPadding(0, dp(32), 0, 0)
+            }, matchWrap())
+            return
+        }
+
+        // Sedang diputar
+        if (cur in q.indices) {
+            queueBox.addView(textView("SEDANG DIPUTAR", 11f, ACCENT2, bold = true).apply {
+                setPadding(0, dp(4), 0, dp(8))
+            }, matchWrap())
+            queueBox.addView(queueRow(q[cur], cur, isCurrent = true), matchWrap())
+        }
+        // Berikutnya
+        val next = q.indices.filter { it != cur }
+        if (next.isNotEmpty()) {
+            val lbl = textView("BERIKUTNYA", 11f, TEXT2, bold = true).apply {
+                setPadding(0, dp(20), 0, dp(8))
+            }
+            queueBox.addView(lbl, matchWrap())
+            for (i in next) {
+                queueBox.addView(queueRow(q[i], i, isCurrent = false), matchWrap())
+            }
+        }
+    }
+
+    private fun queueRow(track: Track, index: Int, isCurrent: Boolean): LinearLayout = with(UiKit) {
+        val row = hrow {
+            setPadding(0, dp(8), 0, dp(8))
+            isClickable = true
+            isFocusable = true
+            setOnClickListener {
+                if (!isCurrent) {
+                    PlayerManager.playAt(index)
+                    refreshQueue()
+                }
+            }
+        }
+        val iv = ImageView(this@PlayerActivity).apply {
+            scaleType = ImageView.ScaleType.CENTER_CROP
+            setBackgroundColor(SURFACE2)
+            roundedCorners(10, 4)
+        }
+        ImageLoader.load(track.thumbnailUrl, iv)
+        row.addView(iv, LinearLayout.LayoutParams(dp(48), dp(48)))
+        val txtCol = vcol {
+            setPadding(dp(12), 0, dp(8), 0)
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        txtCol.addView(textView(track.title, 14f, if (isCurrent) ACCENT2 else TEXT, bold = isCurrent).apply {
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.END
+        }, matchWrap())
+        txtCol.addView(textView(track.channel, 12f, TEXT2).apply {
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.END
+        }, matchWrap())
+        row.addView(txtCol, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        if (!isCurrent) {
+            val btnRm = iconAction(ZeniIcons.Kind.CLOSE, TEXT2, 36, 8)
+            btnRm.setOnClickListener {
+                PlayerManager.removeAt(index)
+                refreshQueue()
+            }
+            row.addView(btnRm, LinearLayout.LayoutParams(dp(36), dp(36)).apply {
+                gravity = Gravity.CENTER_VERTICAL
+            })
+        }
+        row
+    }
+
     @Deprecated("Use OnBackPressedDispatcher")
     override fun onBackPressed() {
         if (::lyricsOverlay.isInitialized && lyricsOverlay.visibility == View.VISIBLE) {
             closeLyrics()
+        } else if (::queueOverlay.isInitialized && queueOverlay.visibility == View.VISIBLE) {
+            closeQueue()
         } else {
             super.onBackPressed()
         }

@@ -235,14 +235,29 @@ object PlayerManager {
     /**
      * Lewati segmen SponsorBlock (sponsor/intro/outro) secara otomatis.
      * Dipanggil tiap 500ms dari loop posisi.
+     *
+     * Pengaman (pelajaran v3.1.1): data segmen komunitas kadang lebih panjang
+     * dari durasi audio, atau seek beruntun mengganggu buffering — keduanya
+     * bisa membuat lagu "berhenti" tiba-tiba. Maka: hanya skip saat player
+     * benar-benar READY, maksimal 1x per 2 detik, dan tidak pernah skip bila
+     * target melewati / terlalu dekat akhir lagu.
      */
+    private var lastSbSeekAt = 0L
+
     private fun applySponsorSkip(pl: ExoPlayer) {
         if (!SponsorBlock.enabled || !pl.isPlaying) return
+        if (pl.playbackState != Player.STATE_READY) return
         try {
             val vid = _uiState.value.current?.videoId ?: return
             val segs = sbSegments[vid] ?: return
             if (segs.isEmpty()) return
+            val dur = pl.duration
+            if (dur <= 0) return
+            val now = android.os.SystemClock.elapsedRealtime()
+            if (now - lastSbSeekAt < 2000) return
             val target = SponsorBlock.skipTarget(segs, pl.currentPosition) ?: return
+            if (target >= dur - 1500) return
+            lastSbSeekAt = now
             pl.seekTo(target)
         } catch (_: Exception) { /* abaikan */ }
     }

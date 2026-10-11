@@ -54,8 +54,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Saran pencarian live (dipanggil dengan debounce dari UI). */
+    suspend fun suggestions(query: String): List<String> = repo.suggestions(query)
+
     // ---- Playback ----
-    fun play(track: Track, queue: List<Track>) = PlayerManager.playTrack(track, queue)
+    fun play(track: Track, queue: List<Track>, radioMode: Boolean = true) =
+        PlayerManager.playTrack(track, queue, radioMode)
 
     /** Feed channel YouTube untuk tab Podcast (fresh fetch = auto-update episode baru). */
     suspend fun channelFeed(channel: PodcastChannel): Triple<String, String, List<Track>> =

@@ -15,5 +15,9 @@
 # (base.apk exists) and before sign.sh (zipalign+sign must see final content).
 set -e
 TOOLS="$(cd "$(dirname "$0")" && pwd)"
+# Versi diambil dari link_res.py (single source of truth) agar nama APK
+# hasil sign.sh tidak pernah basi.
+export ZM_VERSION
+ZM_VERSION="$(grep -oP '"--version-name", "\K[^"]+' "$TOOLS/link_res.py" | head -1)"
 "$TOOLS/compile.sh" && "$TOOLS/dex.sh" && "$TOOLS/add-services.sh" && "$TOOLS/sign.sh"
 echo "BUILD ALL DONE"

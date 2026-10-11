@@ -144,6 +144,10 @@ class PlayerActivity : Activity() {
                 }
                 btnDl.alpha = if (cur == null) 0.4f else 1f
                 updateBufferOverlay(st)
+                st.error?.let {
+                    Toast.makeText(this@PlayerActivity, it, Toast.LENGTH_LONG).show()
+                    PlayerManager.clearError()
+                }
             }
         }
         uiScope.launch {

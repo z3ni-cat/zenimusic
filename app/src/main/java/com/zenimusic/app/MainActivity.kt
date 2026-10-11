@@ -11,6 +11,7 @@ import android.os.Bundle
 import android.text.InputType
 import android.text.TextUtils
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.inputmethod.EditorInfo
@@ -79,6 +80,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
@@ -98,7 +100,8 @@ class MainActivity : Activity() {
     private lateinit var segmentButtons: List<Button>
     private var currentSegment = 1
     private lateinit var zeniPane: ScrollView
-    private lateinit var searchPane: LinearLayout
+    private lateinit var homePane: LinearLayout
+    private lateinit var cariPane: LinearLayout
     private lateinit var libraryPane: LinearLayout
     private lateinit var podcastPane: LinearLayout
 
@@ -121,6 +124,12 @@ class MainActivity : Activity() {
 
     // ---- Search pane ----
     private lateinit var etSearch: EditText
+    private lateinit var lvSuggestions: ListView
+    private lateinit var suggestionAdapter: android.widget.ArrayAdapter<String>
+    private var suggestionJob: kotlinx.coroutines.Job? = null
+    // True saat perubahan teks berasal dari tap saran (bukan ketikan) —
+    // supaya saran tidak di-fetch ulang setelah tap.
+    private var suppressSuggestions = false
     private lateinit var progressBar: ProgressBar
     private lateinit var tvSearchError: TextView
     private lateinit var searchAdapter: TrackAdapter
@@ -129,9 +138,8 @@ class MainActivity : Activity() {
     private lateinit var qpRow: LinearLayout
     private var qpJob: Job? = null
 
-    // ---- Discovery (auto-hide saat mencari) ----
+    // ---- Discovery (Home) ----
     private lateinit var discoveryWrap: LinearLayout
-    private var discoveryVisible = true
 
     // ---- Daylist ----
     private lateinit var daylistCard: LinearLayout
@@ -208,15 +216,15 @@ class MainActivity : Activity() {
             setBackgroundColor(BG)
         }
 
-        // Segmented nav: Zeni | Home | Playlist | Podcast
+        // Segmented nav: Zeni | Home | Cari | Podcast | Playlist
         val segWrap = vcol { setPadding(dp(16), dp(14), dp(16), dp(8)) }
         val segBar = hrow {
             background = roundedBg(SURFACE2, dp(20).toFloat())
             setPadding(dp(4), dp(4), dp(4), dp(4))
         }
-        val segNames = listOf("Zeni", "Home", "Playlist", "Podcast")
+        val segNames = listOf("Zeni", "Home", "Cari", "Podcast", "Playlist")
         segmentButtons = segNames.mapIndexed { i, n ->
-            button(n, 13f).also { styleSegment(it, i == 1) }
+            button(n, 12f).also { styleSegment(it, i == 1) }
         }
         segmentButtons.forEachIndexed { i, b ->
             segBar.add(b, 0, dp(40), 1f)
@@ -225,23 +233,28 @@ class MainActivity : Activity() {
         segWrap.addView(segBar, matchWrap())
         root.addView(segWrap, matchWrap())
 
-        // Konten
+        // Konten — bisa digeser kiri/kanan untuk pindah tab
         val content = FrameLayout(this@MainActivity)
         zeniPane = buildZeniPane()
-        searchPane = buildSearchPane()
+        homePane = buildHomePane()
+        cariPane = buildCariPane()
         libraryPane = buildLibraryPane()
         podcastPane = buildPodcastPane()
         zeniPane.visibility = View.GONE
+        cariPane.visibility = View.GONE
         libraryPane.visibility = View.GONE
         podcastPane.visibility = View.GONE
         val flp = FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
         content.addView(zeniPane, flp)
-        content.addView(searchPane, flp)
-        content.addView(libraryPane, flp)
+        content.addView(homePane, flp)
+        content.addView(cariPane, flp)
         content.addView(podcastPane, flp)
+        content.addView(libraryPane, flp)
         root.addView(content, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+        // Geser horizontal pada area konten → pindah tab
+        content.setOnTouchListener(this@MainActivity.TabSwipeListener { direction -> selectSegment(currentSegment + direction) })
 
         // Mini player — slim bar minimalis mengambang (line-icon)
         val miniWrap = LinearLayout(this@MainActivity).apply {
@@ -731,49 +744,11 @@ class MainActivity : Activity() {
 
     // ================= Halaman Home (search) =================
 
-    private fun buildSearchPane(): LinearLayout = with(UiKit) {
+    private fun buildHomePane(): LinearLayout = with(UiKit) {
         val pane = vcol {}
 
-        // Search bar dalam card rounded
-        val searchWrap = vcol { setPadding(dp(12), dp(8), dp(12), dp(4)) }
-        val searchCard = hrow {
-            background = cardBg()
-            setPadding(dp(16), dp(10), dp(10), dp(10))
-        }
-        etSearch = EditText(this@MainActivity).apply {
-            hint = "Cari lagu / artis..."
-            setHintTextColor(TEXT2)
-            setTextColor(TEXT)
-            background = ColorDrawable(0x00000000)
-            setPadding(0, dp(6), 0, dp(6))
-            inputType = InputType.TYPE_CLASS_TEXT
-            imeOptions = EditorInfo.IME_ACTION_SEARCH
-            maxLines = 1
-            textSize = 15f
-        }
-        etSearch.setOnEditorActionListener { _, actionId, _ ->
-            if (actionId == EditorInfo.IME_ACTION_SEARCH) { doSearch(); true } else false
-        }
-        // Kolom dikosongkan → kartu discovery muncul lagi
-        etSearch.addTextChangedListener(object : android.text.TextWatcher {
-            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
-            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
-            override fun afterTextChanged(s: android.text.Editable?) {
-                if (s.isNullOrEmpty()) setDiscoveryVisible(true)
-            }
-        })
-        searchCard.add(etSearch, 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-        val gap = View(this@MainActivity)
-        searchCard.add(gap, dp(8), dp(1))
-        val btnSearch = accentPillButton("Cari").apply {
-            setPadding(dp(22), dp(10), dp(22), dp(10))
-        }
-        btnSearch.setOnClickListener { doSearch() }
-        searchCard.addView(btnSearch)
-        searchWrap.addView(searchCard, matchWrap())
-        pane.addView(searchWrap, matchWrap())
-
-        // Wadah kartu discovery: otomatis sembunyi saat hasil pencarian tampil
+        // Kartu discovery selalu tampil di Home (pencarian kini punya tab "Cari" sendiri,
+        // jadi tidak ada lagi sembunyi-tampil otomatis)
         discoveryWrap = vcol {}
         pane.addView(discoveryWrap, matchWrap())
 
@@ -854,6 +829,77 @@ class MainActivity : Activity() {
         samplesWrap.addView(samplesCard, matchWrap())
         discoveryWrap.addView(samplesWrap, matchWrap())
 
+        return pane
+    }
+
+    /**
+     * Tab "Cari": kolom pencarian + saran live ala YouTube + hasil pencarian.
+     * Dipisah dari Home agar tampilan hasil tidak perlu sembunyi-tampil.
+     */
+    private fun buildCariPane(): LinearLayout = with(UiKit) {
+        val pane = vcol {}
+
+        // Search bar dalam card rounded
+        val searchWrap = vcol { setPadding(dp(12), dp(8), dp(12), dp(4)) }
+        val searchCard = hrow {
+            background = cardBg()
+            setPadding(dp(16), dp(10), dp(10), dp(10))
+        }
+        etSearch = EditText(this@MainActivity).apply {
+            hint = "Cari lagu / artis..."
+            setHintTextColor(TEXT2)
+            setTextColor(TEXT)
+            background = ColorDrawable(0x00000000)
+            setPadding(0, dp(6), 0, dp(6))
+            inputType = InputType.TYPE_CLASS_TEXT
+            imeOptions = EditorInfo.IME_ACTION_SEARCH
+            maxLines = 1
+            textSize = 15f
+        }
+        etSearch.setOnEditorActionListener { _, actionId, _ ->
+            if (actionId == EditorInfo.IME_ACTION_SEARCH) { doSearch(); true } else false
+        }
+        // Saran live ala YouTube: muncul saat mengetik, sebelum enter
+        etSearch.addTextChangedListener(object : android.text.TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun afterTextChanged(s: android.text.Editable?) {
+                onSearchTyping(s?.toString().orEmpty())
+            }
+        })
+        searchCard.add(etSearch, 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        val gap = View(this@MainActivity)
+        searchCard.add(gap, dp(8), dp(1))
+        val btnSearch = accentPillButton("Cari").apply {
+            setPadding(dp(22), dp(10), dp(22), dp(10))
+        }
+        btnSearch.setOnClickListener { doSearch() }
+        searchCard.addView(btnSearch)
+        searchWrap.addView(searchCard, matchWrap())
+        pane.addView(searchWrap, matchWrap())
+
+        // Dropdown saran (awalnya sembunyi)
+        suggestionAdapter = android.widget.ArrayAdapter(
+            this@MainActivity, android.R.layout.simple_list_item_1, mutableListOf<String>())
+        lvSuggestions = ListView(this@MainActivity).apply {
+            adapter = suggestionAdapter
+            visibility = View.GONE
+            setBackgroundColor(SURFACE)
+            divider = ColorDrawable(SURFACE2)
+            dividerHeight = dp(1)
+            setPadding(dp(12), dp(4), dp(12), dp(4))
+        }
+        lvSuggestions.setOnItemClickListener { _, _, pos, _ ->
+            val s = suggestionAdapter.getItem(pos) ?: return@setOnItemClickListener
+            suppressSuggestions = true
+            etSearch.setText(s)
+            etSearch.setSelection(s.length)
+            hideSuggestions()
+            doSearch()
+        }
+        pane.addView(lvSuggestions, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+
         progressBar = ProgressBar(this@MainActivity).apply { visibility = View.GONE }
         val pbWrap = LinearLayout(this@MainActivity).apply {
             gravity = Gravity.CENTER
@@ -879,12 +925,47 @@ class MainActivity : Activity() {
             onAddToPlaylist = { t -> showAddToPlaylistDialog(t) }
         )
         lv.adapter = searchAdapter
-        val tvEmpty = emptyView("Cari lagu atau artis favoritmu di atas")
+        val tvEmpty = emptyView("Ketik di atas untuk mencari lagu")
         pane.addView(tvEmpty, matchWrap())
         lv.emptyView = tvEmpty
         pane.addView(lv, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
         return pane
+    }
+
+    /** Dipanggil tiap ada ketikan di kolom cari — tampilkan saran dengan debounce. */
+    private fun onSearchTyping(query: String) {
+        suggestionJob?.cancel()
+        // Perubahan teks dari tap saran: jangan fetch saran lagi.
+        if (suppressSuggestions) {
+            suppressSuggestions = false
+            hideSuggestions()
+            return
+        }
+        if (query.trim().length < 2) {
+            hideSuggestions()
+            return
+        }
+        suggestionJob = uiScope.launch {
+            delay(350)
+            try {
+                val list = vm.suggestions(query.trim())
+                if (list.isEmpty()) hideSuggestions()
+                else showSuggestions(list)
+            } catch (_: Exception) {
+                hideSuggestions()
+            }
+        }
+    }
+
+    private fun showSuggestions(list: List<String>) {
+        suggestionAdapter.clear()
+        suggestionAdapter.addAll(list)
+        lvSuggestions.visibility = View.VISIBLE
+    }
+
+    private fun hideSuggestions() {
+        if (::lvSuggestions.isInitialized) lvSuggestions.visibility = View.GONE
     }
 
     /** Perbarui label kartu Daylist sesuai slot waktu aktif. */
@@ -1243,7 +1324,7 @@ class MainActivity : Activity() {
         playlistAdapter = PlaylistAdapter()
         libTrackAdapter = TrackAdapter(
             ctx = this@MainActivity,
-            onPlay = { t -> vm.play(t, libTrackAdapter.items) },
+            onPlay = { t -> vm.play(t, libTrackAdapter.items, radioMode = false) },
             onDownloadHandler = { t -> vm.download(t) }
         )
         lvLibrary.adapter = playlistAdapter
@@ -1329,7 +1410,7 @@ class MainActivity : Activity() {
         lvPodcast = trackListView()
         podcastAdapter = TrackAdapter(
             ctx = this@MainActivity,
-            onPlay = { t -> vm.play(t, podcastAdapter.items) },
+            onPlay = { t -> vm.play(t, podcastAdapter.items, radioMode = false) },
             onFav = { t -> vm.toggleFavorite(t) },
             onDownloadHandler = { t -> vm.download(t) },
             onAddToPlaylist = { t -> showAddToPlaylistDialog(t) }
@@ -1522,16 +1603,17 @@ class MainActivity : Activity() {
     // ================= Segment logic =================
 
     private fun selectSegment(idx: Int) = with(UiKit) {
-        segmentButtons.forEachIndexed { i, b -> styleSegment(b, i == idx) }
-        val panes = listOf(zeniPane, searchPane, libraryPane, podcastPane)
+        val safeIdx = idx.coerceIn(0, 4)
+        segmentButtons.forEachIndexed { i, b -> styleSegment(b, i == safeIdx) }
+        val panes = listOf(zeniPane, homePane, cariPane, podcastPane, libraryPane)
         val dir = when {
-            idx > currentSegment -> 1
-            idx < currentSegment -> -1
+            safeIdx > currentSegment -> 1
+            safeIdx < currentSegment -> -1
             else -> 0
         }
-        currentSegment = idx
+        currentSegment = safeIdx
         panes.forEachIndexed { i, pane ->
-            if (i == idx) {
+            if (i == safeIdx) {
                 val wasGone = pane.visibility != View.VISIBLE
                 pane.visibility = View.VISIBLE
                 // Animasi fade + slide hanya saat benar-benar pindah tab
@@ -1540,8 +1622,69 @@ class MainActivity : Activity() {
                 pane.visibility = View.GONE
             }
         }
-        if (idx == 3) ensurePodcastHome()
-        if (idx == 1) refreshDaylistCard()
+        if (safeIdx == 3) ensurePodcastHome()
+        if (safeIdx == 1) refreshDaylistCard()
+    }
+
+    /**
+     * Geser horizontal pada area konten untuk pindah tab. Diabaikan bila gestur
+     * dimulai di dalam scroller horizontal (mis. Quick Picks) agar tidak rebutan.
+     */
+    private inner class TabSwipeListener(val onSwipe: (Int) -> Unit) : View.OnTouchListener {
+        private var downX = 0f
+        private var downY = 0f
+        private var downView: View? = null
+        private val swipeThreshold = with(UiKit) { dp(90) }
+
+        override fun onTouch(v: View, e: MotionEvent): Boolean {
+            when (e.action) {
+                MotionEvent.ACTION_DOWN -> {
+                    downX = e.x; downY = e.y
+                    downView = findViewAt(v as ViewGroup, e.x, e.y)
+                }
+                MotionEvent.ACTION_UP -> {
+                    val dx = e.x - downX
+                    val dy = e.y - downY
+                    val adx = kotlin.math.abs(dx)
+                    val ady = kotlin.math.abs(dy)
+                    if (adx > swipeThreshold && adx > ady * 1.5f && !isInHorizontalScroller(downView)) {
+                        onSwipe(if (dx < 0) 1 else -1)
+                        return true
+                    }
+                }
+            }
+            return false
+        }
+
+        private fun findViewAt(parent: ViewGroup, x: Float, y: Float): View? {
+            for (i in parent.childCount - 1 downTo 0) {
+                val c = parent.getChildAt(i)
+                if (c.visibility != View.VISIBLE) continue
+                val loc = IntArray(2)
+                c.getLocationOnScreen(loc)
+                val ploc = IntArray(2)
+                parent.getLocationOnScreen(ploc)
+                val lx = loc[0] - ploc[0]
+                val ly = loc[1] - ploc[1]
+                if (x >= lx && x <= lx + c.width && y >= ly && y <= ly + c.height) {
+                    return if (c is ViewGroup && c.childCount > 0) findViewAt(c, x - lx, y - ly) ?: c else c
+                }
+            }
+            return null
+        }
+
+        private fun isInHorizontalScroller(v: View?): Boolean {
+            var cur: View? = v
+            while (cur != null) {
+                if (cur is HorizontalScrollView) return true
+                if (cur is androidx.recyclerview.widget.RecyclerView &&
+                    (cur.layoutManager as? androidx.recyclerview.widget.LinearLayoutManager)
+                        ?.orientation == androidx.recyclerview.widget.LinearLayoutManager.HORIZONTAL
+                ) return true
+                cur = cur.parent as? View
+            }
+            return false
+        }
     }
 
     private fun selectLibTab(idx: Int) = with(UiKit) {
@@ -1763,38 +1906,10 @@ class MainActivity : Activity() {
 
     private fun doSearch() {
         hideKeyboard()
+        hideSuggestions()
+        suppressSuggestions = false
         val q = etSearch.text.toString()
-        // Hasil pencarian tampil → kartu discovery sembunyi otomatis
-        if (q.isNotBlank()) setDiscoveryVisible(false)
         vm.search(q)
-    }
-
-    /** Tampilkan/sembunyikan kartu discovery dengan animasi geser + fade. */
-    private fun setDiscoveryVisible(visible: Boolean) = with(UiKit) {
-        if (!::discoveryWrap.isInitialized || discoveryVisible == visible) return
-        discoveryVisible = visible
-        discoveryWrap.animate().cancel()
-        if (visible) {
-            discoveryWrap.visibility = View.VISIBLE
-            discoveryWrap.translationY = -dp(24).toFloat()
-            discoveryWrap.alpha = 0f
-            discoveryWrap.animate()
-                .translationY(0f)
-                .alpha(1f)
-                .setDuration(250)
-                .setInterpolator(android.view.animation.DecelerateInterpolator())
-                .start()
-        } else {
-            discoveryWrap.animate()
-                .translationY(-dp(24).toFloat())
-                .alpha(0f)
-                .setDuration(220)
-                .setInterpolator(android.view.animation.AccelerateInterpolator())
-                .withEndAction {
-                    if (!discoveryVisible) discoveryWrap.visibility = View.GONE
-                }
-                .start()
-        }
     }
 
     private fun hideKeyboard() {

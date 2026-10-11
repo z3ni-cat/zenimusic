@@ -6,6 +6,7 @@ import android.net.Uri
 import androidx.core.net.toUri
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
+import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import com.zenimusic.app.data.model.Track
@@ -58,6 +59,18 @@ object PlayerManager {
     /** Lagu yang harus diputar begitu service/player kembali hidup (recovery). */
     private var pendingResumeTrack: Track? = null
     private var positionLoopStarted = false
+    /** Hitung error player beruntun — untuk batas recovery agar tidak loop selamanya. */
+    private var playerErrorRetries = 0
+    // Batas percobaan ambil lagu berikutnya saat transisi gagal (jaringan putus).
+    // Tanpa ini: radioNext -> autoNextSimilar -> next() -> radioNext berputar
+    // tanpa henti, musik diam tanpa pesan error.
+    private var transitionFailures = 0
+    // True setelah lagu yang sedang di-resolve benar-benar mulai bunyi.
+    // Dipakai agar resume posisi hanya untuk error di tengah lagu,
+    // bukan error saat loading awal (posisi bisa basi dari lagu sebelumnya).
+    private var trackPlaybackStarted = false
+    /** Mode radio: true = auto-next dari rekomendasi YouTube (acak), false = ikuti antrean. */
+    private var radioMode = true
 
     // ============ Sleep timer: flag fade agar tidak rebutan volume ============
     /** True saat sleep timer sedang fade-out; crossfade harus diam. */
@@ -144,7 +157,30 @@ object PlayerManager {
         } catch (e: Exception) { /* abaikan */ }
         p.addListener(object : Player.Listener {
             override fun onIsPlayingChanged(isPlaying: Boolean) {
+                if (isPlaying) {
+                    playerErrorRetries = 0
+                    transitionFailures = 0
+                    trackPlaybackStarted = true
+                }
                 update { copy(isPlaying = isPlaying) }
+            }
+
+            override fun onPlayerError(error: PlaybackException) {
+                // Jangan mati diam-diam: coba pulihkan dengan URL fresh (maks 2x),
+                // lanjut dari posisi terakhir agar tidak mengulang dari awal.
+                // Kalau tetap gagal tampilkan penyebab aslinya ke user.
+                val msg = error.message ?: "error tidak dikenal (${error.errorCode})"
+                if (playerErrorRetries < 2) {
+                    playerErrorRetries++
+                    val cur = _uiState.value.current
+                    // Posisi terakhir dari loop 500ms; hanya dipakai bila lagu
+                    // memang sudah sempat bunyi (bukan gagal saat loading).
+                    val resumeAt = if (trackPlaybackStarted)
+                        _uiState.value.positionMs.coerceAtLeast(0) else 0L
+                    if (cur != null) resolveAndPlay(cur, startAtMs = resumeAt)
+                } else {
+                    update { copy(isPlaying = false, buffering = false, loading = false, error = "Pemutar error: $msg") }
+                }
             }
 
             override fun onPlaybackStateChanged(playbackState: Int) {
@@ -257,7 +293,22 @@ object PlayerManager {
         }
     }
 
-    fun playTrack(track: Track, queue: List<Track>) {
+    /**
+     * @param radioMode true = lagu berikutnya diambil dari rekomendasi YouTube lagu yang
+     * sedang diputar (acak, ala radio YouTube) — bukan dari antrean hasil pencarian.
+     * false = ikuti antrean (untuk playlist/podcast).
+     */
+    fun playTrack(track: Track, queue: List<Track>, radioMode: Boolean = true) {
+        this.radioMode = radioMode
+        if (radioMode) {
+            // Mode radio: antrean dimulai dari lagu yang di-tap SAJA.
+            // Lagu berikutnya diisi dari rekomendasi YouTube (prefetchRadio),
+            // bukan dari hasil pencarian.
+            update { copy(queue = listOf(track), queueIndex = 0, playedIds = setOf(track.videoId)) }
+            resolveAndPlay(track)
+            prefetchRadio(track)
+            return
+        }
         val raw = queue.ifEmpty { listOf(track) }
         // Hapus duplikat "lagu sama beda channel/versi" dari antrian berdasarkan judul
         // yang dinormalisasi — selalu pertahankan lagu yang di-tap user.
@@ -291,6 +342,11 @@ object PlayerManager {
     }
 
     fun next() {
+        // Mode radio: tombol next juga ambil lagu acak dari rekomendasi YouTube.
+        if (radioMode && _uiState.value.current != null) {
+            radioNext()
+            return
+        }
         val s = _uiState.value
         if (s.queue.isEmpty()) return
         val idx = if (s.shuffle && s.queue.size > 1) {
@@ -381,8 +437,95 @@ object PlayerManager {
             player?.play()
             return
         }
+        // Mode radio: lagu berikutnya dari rekomendasi YouTube (acak),
+        // bukan dari antrean hasil pencarian.
+        if (radioMode) {
+            radioNext()
+            return
+        }
         if (s.queue.isEmpty()) return
         autoNextSimilar()
+    }
+
+    /**
+     * Isi antrean radio dari rekomendasi YouTube lagu acuan.
+     * Dipanggil saat radio dimulai & saat stok menipis. Tidak memutar — hanya menambah antrean.
+     */
+    private fun prefetchRadio(forTrack: Track) {
+        scope.launch {
+            try {
+                val playedNow = _uiState.value.playedIds
+                val existing = _uiState.value.queue.map { it.videoId }.toSet()
+                val related = withContext(Dispatchers.IO) { repo.relatedTracks(forTrack.videoId) }
+                    .filter { r -> r.videoId !in playedNow && r.videoId !in existing }
+                    .shuffled()
+                    .take(10)
+                if (related.isEmpty()) return@launch
+                update { copy(queue = _uiState.value.queue + related) }
+            } catch (_: Exception) { }
+        }
+    }
+
+    /**
+     * Radio ala YouTube: lanjut ke lagu antrean radio berikutnya yang belum diputar;
+     * bila stok habis, fetch rekomendasi dari lagu saat ini. Lagu yang diputar
+     * selalu dari rekomendasi — tidak pernah dari hasil pencarian awal.
+     */
+    private fun radioNext() {
+        val s = _uiState.value
+        // 1) Masih ada stok radio yang belum diputar → pakai itu
+        val nextIdx = (s.queueIndex + 1 until s.queue.size).firstOrNull { i ->
+            s.queue[i].videoId !in s.playedIds
+        }
+        if (nextIdx != null) {
+            val nxt = s.queue[nextIdx]
+            update { copy(queueIndex = nextIdx, playedIds = s.playedIds + nxt.videoId) }
+            resolveAndPlay(nxt)
+            // Stok menipis → tambah lagi dari lagu ini
+            if (nextIdx >= s.queue.size - 3) prefetchRadio(nxt)
+            return
+        }
+        // 2) Stok habis → fetch rekomendasi dari lagu saat ini
+        val current = s.current
+        if (current == null) { autoNextSimilar(); return }
+        scope.launch {
+            update { copy(loading = true) }
+            try {
+                val playedNow = _uiState.value.playedIds + current.videoId
+                val existing = _uiState.value.queue.map { it.videoId }.toSet()
+                val related = withContext(Dispatchers.IO) { repo.relatedTracks(current.videoId) }
+                    .filter { r -> r.videoId !in playedNow && r.videoId !in existing }
+                    .shuffled()
+                    .take(10)
+                if (related.isNotEmpty()) {
+                    val base = _uiState.value.queue
+                    val newQueue = base + related
+                    val nxt = related.first()
+                    update {
+                        copy(
+                            queue = newQueue,
+                            queueIndex = base.size,
+                            playedIds = playedNow + nxt.videoId,
+                            loading = false
+                        )
+                    }
+                    resolveAndPlay(nxt)
+                } else {
+                    update { copy(loading = false) }
+                    autoNextSimilar()
+                }
+            } catch (e: Exception) {
+                // Gagal ambil rekomendasi (mis. jaringan putus): jangan berputar
+                // tanpa henti — batasi percobaan lalu tampilkan pesan yang jelas.
+                transitionFailures++
+                if (transitionFailures >= 3) {
+                    update { copy(loading = false, error = "Gagal memuat lagu berikutnya. Periksa koneksi lalu tekan play.") }
+                } else {
+                    update { copy(loading = false) }
+                    autoNextSimilar()
+                }
+            }
+        }
     }
 
     /**
@@ -435,8 +578,14 @@ object PlayerManager {
                     next()
                 }
             } catch (e: Exception) {
-                update { copy(loading = false, playedIds = playedNow) }
-                next()
+                // Sama seperti di radioNext: batasi agar tidak berputar tanpa henti.
+                transitionFailures++
+                if (transitionFailures >= 3) {
+                    update { copy(loading = false, playedIds = playedNow, error = "Gagal memuat lagu berikutnya. Periksa koneksi lalu tekan play.") }
+                } else {
+                    update { copy(loading = false, playedIds = playedNow) }
+                    next()
+                }
             }
         }
     }
@@ -466,18 +615,38 @@ object PlayerManager {
         return score
     }
 
-    private fun resolveAndPlay(track: Track) {
+    private fun resolveAndPlay(track: Track, startAtMs: Long = 0) {
         resolveJob?.cancel()
         resolveJob = scope.launch {
             update { copy(loading = true, error = null, current = track) }
-            try {
-                val uri: String = if (!track.localPath.isNullOrEmpty() && File(track.localPath).exists()) {
-                    Uri.fromFile(File(track.localPath)).toString()
-                } else {
-                    withContext(Dispatchers.IO) { repo.resolveAudioUrl(track.videoId) }
+            trackPlaybackStarted = false
+            // Resolve URL dengan retry: kadang YouTube menolak sesaat (rate limit),
+            // coba lagi 2x dengan jeda sebelum menyerah.
+            var uri: String? = null
+            var lastError: Exception? = null
+            for (attempt in 0..2) {
+                try {
+                    uri = if (!track.localPath.isNullOrEmpty() && File(track.localPath).exists()) {
+                        Uri.fromFile(File(track.localPath)).toString()
+                    } else {
+                        withContext(Dispatchers.IO) { repo.resolveAudioUrl(track.videoId) }
+                    }
+                    lastError = null
+                    break
+                } catch (e: Exception) {
+                    if (e is kotlinx.coroutines.CancellationException) throw e
+                    lastError = e
+                    if (attempt < 2) delay(1500L * (attempt + 1))
                 }
+            }
+            val finalUri = uri
+            if (finalUri == null) {
+                update { copy(loading = false, error = lastError?.message ?: "Gagal memutar lagu") }
+                return@launch
+            }
+            try {
                 val item = MediaItem.Builder()
-                    .setUri(uri)
+                    .setUri(finalUri)
                     .setMediaId(track.videoId)
                     .setMediaMetadata(
                         MediaMetadata.Builder()
@@ -498,6 +667,10 @@ object PlayerManager {
                 } ?: throw IllegalStateException("Player belum siap")
                 pl.setMediaItem(item)
                 pl.prepare()
+                // Pulih dari error tengah lagu: lanjut dari posisi terakhir.
+                if (startAtMs > 1000) {
+                    try { pl.seekTo(startAtMs) } catch (_: Exception) { }
+                }
                 pl.play()
                 // Crossfade: fade in halus untuk lagu baru
                 fadeInNewTrack(pl)

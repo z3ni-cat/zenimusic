@@ -27,9 +27,24 @@ class MusicRepository(
 ) {
     private val service get() = ServiceList.YouTube
 
+    /** Saran pencarian live ala YouTube. Must be called off the main thread. */
+    suspend fun suggestions(query: String): List<String> = withContext(Dispatchers.IO) {
+        try {
+            org.schabi.newpipe.extractor.services.youtube.extractors.YoutubeSuggestionExtractor(service)
+                .suggestionList(query)
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
     /** Search YouTube via NewPipe Extractor. Must be called off the main thread. */
     suspend fun search(query: String): List<Track> = withContext(Dispatchers.IO) {
-        val handler = service.searchQHFactory.fromQuery(query)
+        // Filter khusus musik (ala YouTube Music) — bukan video dokumenter/vlog.
+        val handler = service.searchQHFactory.fromQuery(
+            query,
+            listOf(org.schabi.newpipe.extractor.services.youtube.linkHandler.YoutubeSearchQueryHandlerFactory.MUSIC_SONGS),
+            ""
+        )
         val info = SearchInfo.getInfo(service, handler)
         val tracks = info.relatedItems
             .filterIsInstance<StreamInfoItem>()

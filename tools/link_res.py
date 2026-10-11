@@ -59,8 +59,8 @@ def link(flats):
         "--auto-add-overlay",
         "--min-sdk-version", "26",
         "--target-sdk-version", "34",
-        "--version-code", "34",
-        "--version-name", "3.1.4",
+        "--version-code", "40",
+        "--version-name", "3.2.4",
     ] + flats
     run(cmd)
     print("linked ->", BASE_APK)

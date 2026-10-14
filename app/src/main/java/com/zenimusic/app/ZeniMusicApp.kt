@@ -30,6 +30,15 @@ class ZeniMusicApp : Application() {
     override fun onCreate() {
         super.onCreate()
 
+        // Kecualikan dari "Jeda aktivitas apl jika tidak digunakan" (auto-revoke/hibernasi),
+        // seperti YMusic — toggle-nya jadi mati sendiri setiap aplikasi dibuka.
+        // Tanpa ini Android bisa mencabut izin & membatasi kerja background.
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+                packageManager.setAutoRevokeWhitelisted(packageName, true)
+            }
+        } catch (_: Exception) { }
+
         // Crash catcher (v2.0.1 diagnostic): tulis stack trace ke crash.log sebelum app mati.
         val defaultHandler = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->

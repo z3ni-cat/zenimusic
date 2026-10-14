@@ -70,5 +70,42 @@ object ImageLoader {
         }
     }
 
+    /**
+     * Ambil bitmap dari cache, atau download dulu bila belum ada.
+     * Callback selalu dipanggil di main thread. null bila URL kosong / gagal.
+     * Pola sama seperti [load], tapi tanpa ImageView (untuk kebutuhan custom
+     * seperti background blur).
+     */
+    fun get(url: String?, onResult: (Bitmap?) -> Unit) {
+        val key = url.orEmpty()
+        if (key.isEmpty()) {
+            scope.launch { onResult(null) }
+            return
+        }
+        val cached = cache.get(key)
+        if (cached != null) {
+            scope.launch { onResult(cached) }
+            return
+        }
+        scope.launch(Dispatchers.IO) {
+            var bmp: Bitmap? = null
+            try {
+                val req = Request.Builder().url(key).build()
+                http.newCall(req).execute().use { resp ->
+                    if (resp.isSuccessful) {
+                        val bytes = resp.body?.bytes()
+                        if (bytes != null) {
+                            bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                            if (bmp != null) cache.put(key, bmp!!)
+                        }
+                    }
+                }
+            } catch (_: Exception) {
+                // null → pemanggil pakai fallback.
+            }
+            withContext(Dispatchers.Main) { onResult(bmp) }
+        }
+    }
+
     private const val PLACEHOLDER = 0xFF2A2536.toInt()
 }

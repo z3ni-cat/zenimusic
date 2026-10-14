@@ -79,6 +79,16 @@ class PlaybackService : MediaSessionService() {
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = session
 
     /**
+     * Minta sistem menghidupkan ulang service bila dimatikan paksa.
+     * (Tidak selalu dipatuhi OEM galak — aplikasi juga mencoba sendiri
+     * via PlayerManager — tapi ini lapisan pertahanan pertama.)
+     */
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        super.onStartCommand(intent, flags, startId)
+        return START_STICKY
+    }
+
+    /**
      * Musik TIDAK boleh mati saat aplikasi di-swipe dari recent apps (seperti Spotify/YMusic).
      * Default Media3: stopSelf() jika service tidak sedang foreground — itu yang membunuh musik
      * tepat di jeda antar lagu / saat pause. Jadi sengaja tidak memanggil super.

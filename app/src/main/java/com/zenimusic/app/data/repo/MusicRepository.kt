@@ -218,4 +218,178 @@ class MusicRepository(
 
     suspend fun getTranslation(videoId: String): String? = dao.getTranslation(videoId)
     suspend fun saveTranslation(videoId: String, text: String) = dao.saveTranslation(videoId, text)
+
+    // ---- Bab/tracklist di dalam video panjang (mix) ----
+
+    /**
+     * Daftar lagu di dalam video mix, diparse dari deskripsi (baris bertimestamp).
+     * Mix phonk/lofi dsb. hampir selalu menulis tracklist di deskripsi.
+     * Valid hanya bila ditemukan >= 3 bab; selain itu kosong.
+     */
+    suspend fun mixChapters(videoId: String): List<MixChapter> = withContext(Dispatchers.IO) {
+        try {
+            val info = StreamInfo.getInfo(service, "https://www.youtube.com/watch?v=$videoId")
+            val desc = info.description?.content ?: return@withContext emptyList()
+            parseChapters(desc)
+        } catch (_: Exception) { emptyList() }
+    }
+
+    private fun parseChapters(desc: String): List<MixChapter> {
+        // Pola: "0:00 Judul" / "00:00 Judul" / "1:02:33 Judul" (boleh diawali - / •)
+        val re = Regex("""^\s*(?:[-•*]\s*)?(\d{1,2}):(\d{2})(?::(\d{2}))?\s+[-–—:]?\s*(.+)$""")
+        val out = mutableListOf<MixChapter>()
+        for (raw in desc.lines()) {
+            val m = re.find(raw.trim()) ?: continue
+            val g = m.groupValues
+            val hasHours = g[3].isNotEmpty()
+            val h = if (hasHours) g[1].toLong() else 0L
+            val min = if (hasHours) g[2].toLong() else g[1].toLong()
+            val sec = if (hasHours) g[3].toLong() else g[2].toLong()
+            val title = g[4].trim().trim('-', '–', '—', ':', ' ').trim()
+            if (title.isEmpty() || title.length > 120) continue
+            out.add(MixChapter((h * 3600 + min * 60 + sec) * 1000, title))
+        }
+        val sorted = out.sortedBy { it.startMs }.distinctBy { it.startMs }
+        return if (sorted.size >= 3) sorted else emptyList()
+    }
+
+    // ---- Discovery "Pilihan Buatmu" berbasis genre ----
+
+    /**
+     * Genre lagu via iTunes Search API (gratis, tanpa kunci), di-cache di DB.
+     * Mengembalikan null bila tidak ketemu; kegagalan jaringan juga null.
+     */
+    suspend fun genreOf(track: Track): String? = withContext(Dispatchers.IO) {
+        dao.getGenre(track.videoId)?.let { return@withContext it }
+        val genre = try {
+            val q = java.net.URLEncoder.encode(
+                "${track.channel} ${track.title}".take(100), "UTF-8")
+            val req = Request.Builder()
+                .url("https://itunes.apple.com/search?term=$q&entity=song&limit=1")
+                .header("User-Agent", "ZeniMusic/3.4.0")
+                .build()
+            http.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return@use null
+                val body = resp.body?.string() ?: return@use null
+                val arr = org.json.JSONObject(body).optJSONArray("results")
+                if (arr == null || arr.length() == 0) return@use null
+                arr.getJSONObject(0).optString("primaryGenreName").ifEmpty { null }
+            }
+        } catch (_: Exception) { null }
+        // Cache juga hasil kosong ("") agar tidak ditanya berulang ke iTunes.
+        dao.saveGenre(track.videoId, genre ?: "")
+        genre
+    }
+
+    /** Genre yang paling sering didengar sejak [sinceMs], teratas dulu. */
+    suspend fun topGenres(sinceMs: Long, limit: Int = 3): List<String> =
+        withContext(Dispatchers.IO) {
+            val counts = mutableMapOf<String, Int>()
+            for (t in topPlayed(sinceMs, 30)) {
+                val g = try { genreOf(t) } catch (_: Exception) { null }
+                if (!g.isNullOrBlank()) counts[g] = (counts[g] ?: 0) + 1
+            }
+            counts.entries.sortedByDescending { it.value }.take(limit).map { it.key }
+        }
+
+    /**
+     * Rekomendasi discovery: lagu dari genre favorit yang BELUM pernah didengar
+     * (cek riwayat/favorit/playlist) dan berdurasi wajar (30 dtk – 30 mnt).
+     * Hasil pencarian 1 jam tetap ada di tab Cari — filter ini khusus discovery.
+     */
+    suspend fun discoveryPicks(sinceMs: Long, limit: Int = 10): List<Track> =
+        withContext(Dispatchers.IO) {
+            // 1) Cache harian: hemat jaringan & cepat dibuka.
+            loadDiscoveryCache()?.let { return@withContext it }
+            val genres = try { topGenres(sinceMs, 3) } catch (_: Exception) { emptyList() }
+            if (genres.isEmpty()) return@withContext emptyList()
+            val heard = try { dao.heardVideoIds() } catch (_: Exception) { emptySet() }
+            val out = LinkedHashMap<String, Track>()
+            for (g in genres) {
+                val results = try { search(g) } catch (_: Exception) { emptyList() }
+                for (t in results) {
+                    if (t.videoId in heard) continue
+                    if (t.durationSec < 30 || t.durationSec >= 1800) continue
+                    out.putIfAbsent(t.videoId, t)
+                    if (out.size >= limit) break
+                }
+                if (out.size >= limit) break
+            }
+            val picks = out.values.toList()
+            if (picks.isNotEmpty()) saveDiscoveryCache(picks)
+            picks
+        }
+
+    /** Cache discovery per hari di filesDir (JSON sederhana). */
+    private fun discoveryCacheFile() = File(filesDir, "discovery_cache.json")
+
+    private fun loadDiscoveryCache(): List<Track>? {
+        return try {
+            val f = discoveryCacheFile()
+            if (!f.exists()) return null
+            val o = org.json.JSONObject(f.readText())
+            val today = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
+                .format(java.util.Date())
+            if (o.optString("date") != today) return null
+            val arr = o.optJSONArray("tracks") ?: return null
+            List(arr.length()) { i ->
+                val t = arr.getJSONObject(i)
+                Track(
+                    videoId = t.getString("videoId"),
+                    title = t.getString("title"),
+                    channel = t.getString("channel"),
+                    thumbnailUrl = t.optString("thumbnailUrl"),
+                    durationSec = t.optLong("durationSec")
+                )
+            }.ifEmpty { null }
+        } catch (_: Exception) { null }
+    }
+
+    private fun saveDiscoveryCache(tracks: List<Track>) {
+        try {
+            val today = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
+                .format(java.util.Date())
+            val arr = org.json.JSONArray()
+            for (t in tracks) {
+                arr.put(org.json.JSONObject().apply {
+                    put("videoId", t.videoId)
+                    put("title", t.title)
+                    put("channel", t.channel)
+                    put("thumbnailUrl", t.thumbnailUrl)
+                    put("durationSec", t.durationSec)
+                })
+            }
+            discoveryCacheFile().writeText(
+                org.json.JSONObject().apply {
+                    put("date", today)
+                    put("tracks", arr)
+                }.toString()
+            )
+        } catch (_: Exception) { }
+    }
+
+    /**
+     * Pool lagu untuk radio: gabungan lagu se-artis (via filter musik -> dijamin musik)
+     * + related yang disaring bentuk-lagu (30 dtk - 12 mnt).
+     * Mencegah video non-musik (dokumenter, gaming, vlog) masuk antrean radio,
+     * sekaligus memutus rantai: sekali video non-musik masuk, related-nya ikut non-musik.
+     */
+    suspend fun radioPool(track: Track): List<Track> = withContext(Dispatchers.IO) {
+        val artistPool = try {
+            val ch = track.channel.trim()
+            if (ch.isEmpty() || ch.equals("Unknown", ignoreCase = true)) emptyList()
+            else search(ch)
+        } catch (_: Exception) { emptyList<Track>() }
+        val relatedPool = try {
+            relatedTracks(track.videoId)
+        } catch (_: Exception) { emptyList<Track>() }
+            .filter { it.durationSec in 30..720 }
+        (artistPool + relatedPool)
+            .distinctBy { it.videoId }
+            .filter { it.videoId != track.videoId }
+            .shuffled()
+    }
 }
+
+/** Satu bab (lagu) di dalam video mix panjang. */
+data class MixChapter(val startMs: Long, val title: String)

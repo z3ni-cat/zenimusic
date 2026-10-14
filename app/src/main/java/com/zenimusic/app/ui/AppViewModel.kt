@@ -155,7 +155,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     suspend fun topPlayed(sinceMs: Long, limit: Int = 10): List<Track> =
         repo.topPlayed(sinceMs, limit)
 
+    /** Discovery "Pilihan Buatmu": rekomendasi genre yang belum pernah didengar. */
+    suspend fun discoveryPicks(): List<Track> {
+        val since = System.currentTimeMillis() - 30L * 24 * 60 * 60 * 1000
+        return repo.discoveryPicks(since, 10)
+    }
+
     suspend fun getTranslation(videoId: String): String? = repo.getTranslation(videoId)
     suspend fun saveTranslation(videoId: String, text: String) =
         repo.saveTranslation(videoId, text)
+
+    /** Daftar lagu di dalam video mix (dari deskripsi); kosong bila tidak ada. */
+    suspend fun mixChapters(videoId: String): List<com.zenimusic.app.data.repo.MixChapter> =
+        repo.mixChapters(videoId)
 }

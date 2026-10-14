@@ -3,6 +3,7 @@ package com.zenimusic.app.player
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import androidx.core.content.ContextCompat
 import androidx.core.net.toUri
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
@@ -58,6 +59,9 @@ object PlayerManager {
     private var resolveJob: Job? = null
     /** Lagu yang harus diputar begitu service/player kembali hidup (recovery). */
     private var pendingResumeTrack: Track? = null
+    private var pendingResumeMs: Long = 0L
+    /** Percobaan hidupkan ulang service setelah player hilang (dibatasi). */
+    private var svcRestartTries = 0
     private var positionLoopStarted = false
     /** Hitung error player beruntun — untuk batas recovery agar tidak loop selamanya. */
     private var playerErrorRetries = 0
@@ -69,6 +73,8 @@ object PlayerManager {
     // Dipakai agar resume posisi hanya untuk error di tengah lagu,
     // bukan error saat loading awal (posisi bisa basi dari lagu sebelumnya).
     private var trackPlaybackStarted = false
+    // Penanda buffering berkepanjangan (untuk log diagnosis).
+    private var wasBuffering = false
     /** Mode radio: true = auto-next dari rekomendasi YouTube (acak), false = ikuti antrean. */
     private var radioMode = true
 
@@ -151,6 +157,7 @@ object PlayerManager {
     /** Called by PlaybackService once it builds the ExoPlayer. */
     fun attachPlayer(p: ExoPlayer) {
         player = p
+        svcRestartTries = 0
         // Tempel equalizer ke audio session player
         try {
             com.zenimusic.app.audio.EqualizerHelper.attach(p.audioSessionId)
@@ -162,6 +169,12 @@ object PlayerManager {
                     transitionFailures = 0
                     trackPlaybackStarted = true
                 }
+                // Catat setiap jeda/lanjut — untuk kasus "berhenti tanpa error di log".
+                val cur = _uiState.value.current
+                if (cur != null) {
+                    PlaybackLog.add("STATE", if (isPlaying) "▶ Lanjut: ${cur.title}"
+                        else "⏸ Jeda di ${( _uiState.value.positionMs / 1000)} dtk")
+                }
                 update { copy(isPlaying = isPlaying) }
             }
 
@@ -170,6 +183,7 @@ object PlayerManager {
                 // lanjut dari posisi terakhir agar tidak mengulang dari awal.
                 // Kalau tetap gagal tampilkan penyebab aslinya ke user.
                 val msg = error.message ?: "error tidak dikenal (${error.errorCode})"
+                PlaybackLog.add("ERROR", "Player error [${error.errorCode}]: $msg")
                 if (playerErrorRetries < 2) {
                     playerErrorRetries++
                     val cur = _uiState.value.current
@@ -177,16 +191,33 @@ object PlayerManager {
                     // memang sudah sempat bunyi (bukan gagal saat loading).
                     val resumeAt = if (trackPlaybackStarted)
                         _uiState.value.positionMs.coerceAtLeast(0) else 0L
+                    PlaybackLog.add("PULIH", "Coba ambil ulang (${playerErrorRetries}/2) dari ${(resumeAt / 1000)} dtk")
                     if (cur != null) resolveAndPlay(cur, startAtMs = resumeAt)
                 } else {
+                    PlaybackLog.add("ERROR", "Menyerah setelah 2x percobaan")
                     update { copy(isPlaying = false, buffering = false, loading = false, error = "Pemutar error: $msg") }
                 }
             }
 
             override fun onPlaybackStateChanged(playbackState: Int) {
                 when (playbackState) {
-                    Player.STATE_BUFFERING -> update { copy(buffering = true) }
-                    Player.STATE_READY, Player.STATE_IDLE -> update { copy(buffering = false) }
+                    Player.STATE_BUFFERING -> {
+                        update { copy(buffering = true) }
+                        if (!wasBuffering) {
+                            wasBuffering = true
+                            _uiState.value.current?.let {
+                                PlaybackLog.add("STATE", "… Buffering: ${it.title}")
+                            }
+                        }
+                    }
+                    Player.STATE_READY -> {
+                        update { copy(buffering = false) }
+                        if (wasBuffering) {
+                            wasBuffering = false
+                            PlaybackLog.add("STATE", "✓ Buffering selesai")
+                        }
+                    }
+                    Player.STATE_IDLE -> update { copy(buffering = false) }
                     Player.STATE_ENDED -> {
                         update { copy(buffering = false) }
                         onTrackEnded()
@@ -195,7 +226,13 @@ object PlayerManager {
             }
         })
         // Service (kembali) hidup: lanjutkan lagu yang tertunda dipulihkan, kalau ada.
-        pendingResumeTrack?.let { pendingResumeTrack = null; resolveAndPlay(it) }
+        pendingResumeTrack?.let { t ->
+            val pos = pendingResumeMs
+            pendingResumeTrack = null
+            pendingResumeMs = 0L
+            PlaybackLog.add("SERVICE", "Service hidup lagi — lanjut otomatis @ ${pos / 1000} dtk")
+            resolveAndPlay(t, startAtMs = pos)
+        }
         if (positionLoopStarted) return
         positionLoopStarted = true
         scope.launch {
@@ -214,6 +251,21 @@ object PlayerManager {
                 } else if (_uiState.value.isPlaying) {
                     // Player hilang tapi tampilan masih "playing": koreksi agar tombol tidak stuck.
                     update { copy(isPlaying = false, buffering = false) }
+                } else {
+                    // Player hilang (service dimatikan sistem) dan ada lagu tertunda:
+                    // hidupkan ulang service sendiri — maks 5x percobaan, tercatat di log.
+                    // (Sebelumnya hanya menunggu sistem me-restart, yang sering tak terjadi.)
+                    val pending = pendingResumeTrack
+                    if (pending != null && svcRestartTries < 5) {
+                        svcRestartTries++
+                        PlaybackLog.add("SERVICE", "Player hilang — hidupkan ulang service (cobaan $svcRestartTries)")
+                        try {
+                            ContextCompat.startForegroundService(
+                                appContext, Intent(appContext, PlaybackService::class.java))
+                        } catch (e: Exception) {
+                            PlaybackLog.add("SERVICE", "Gagal hidupkan ulang: ${e.message}")
+                        }
+                    }
                 }
             }
         }
@@ -284,11 +336,24 @@ object PlayerManager {
     }
 
     fun releasePlayer() {
+        val wasPlaying = _uiState.value.isPlaying
+        val cur = _uiState.value.current
+        val pos = _uiState.value.positionMs.coerceAtLeast(0)
         player?.release()
         player = null
-        pendingResumeTrack = null
+        // Simpan lagu + posisi agar bisa lanjut otomatis bila service dihidupkan
+        // lagi oleh sistem — tapi hanya bila memang sedang bunyi (bukan jeda manual).
+        if (wasPlaying && cur != null) {
+            pendingResumeTrack = cur
+            pendingResumeMs = pos
+            PlaybackLog.add("SERVICE", "Service dimatikan sistem — simpan ${cur.title} @ ${pos / 1000} dtk")
+        } else {
+            pendingResumeTrack = null
+            pendingResumeMs = 0L
+            if (cur != null) PlaybackLog.add("SERVICE", "Service dimatikan sistem")
+        }
         // Jangan biarkan tombol stuck di PAUSE: player sudah tidak ada.
-        if (_uiState.value.isPlaying || _uiState.value.buffering) {
+        if (wasPlaying || _uiState.value.buffering) {
             update { copy(isPlaying = false, buffering = false) }
         }
     }
@@ -437,6 +502,7 @@ object PlayerManager {
             player?.play()
             return
         }
+        PlaybackLog.add("SELESAI", "Lagu habis → ambil lagu berikutnya")
         // Mode radio: lagu berikutnya dari rekomendasi YouTube (acak),
         // bukan dari antrean hasil pencarian.
         if (radioMode) {
@@ -456,7 +522,7 @@ object PlayerManager {
             try {
                 val playedNow = _uiState.value.playedIds
                 val existing = _uiState.value.queue.map { it.videoId }.toSet()
-                val related = withContext(Dispatchers.IO) { repo.relatedTracks(forTrack.videoId) }
+                val related = withContext(Dispatchers.IO) { repo.radioPool(forTrack) }
                     .filter { r -> r.videoId !in playedNow && r.videoId !in existing }
                     .shuffled()
                     .take(10)
@@ -479,6 +545,7 @@ object PlayerManager {
         }
         if (nextIdx != null) {
             val nxt = s.queue[nextIdx]
+            PlaybackLog.add("RADIO", "→ ${nxt.title} (${nxt.channel})")
             update { copy(queueIndex = nextIdx, playedIds = s.playedIds + nxt.videoId) }
             resolveAndPlay(nxt)
             // Stok menipis → tambah lagi dari lagu ini
@@ -493,7 +560,7 @@ object PlayerManager {
             try {
                 val playedNow = _uiState.value.playedIds + current.videoId
                 val existing = _uiState.value.queue.map { it.videoId }.toSet()
-                val related = withContext(Dispatchers.IO) { repo.relatedTracks(current.videoId) }
+                val related = withContext(Dispatchers.IO) { repo.radioPool(current) }
                     .filter { r -> r.videoId !in playedNow && r.videoId !in existing }
                     .shuffled()
                     .take(10)
@@ -518,7 +585,9 @@ object PlayerManager {
                 // Gagal ambil rekomendasi (mis. jaringan putus): jangan berputar
                 // tanpa henti — batasi percobaan lalu tampilkan pesan yang jelas.
                 transitionFailures++
+                PlaybackLog.add("ERROR", "Gagal ambil rekomendasi (${transitionFailures}/3): ${e.message}")
                 if (transitionFailures >= 3) {
+                    PlaybackLog.add("ERROR", "STOP: tidak bisa lanjut, menunggu aksi manual")
                     update { copy(loading = false, error = "Gagal memuat lagu berikutnya. Periksa koneksi lalu tekan play.") }
                 } else {
                     update { copy(loading = false) }
@@ -580,7 +649,9 @@ object PlayerManager {
             } catch (e: Exception) {
                 // Sama seperti di radioNext: batasi agar tidak berputar tanpa henti.
                 transitionFailures++
+                PlaybackLog.add("ERROR", "Gagal ambil lagu mirip (${transitionFailures}/3): ${e.message}")
                 if (transitionFailures >= 3) {
+                    PlaybackLog.add("ERROR", "STOP: tidak bisa lanjut, menunggu aksi manual")
                     update { copy(loading = false, playedIds = playedNow, error = "Gagal memuat lagu berikutnya. Periksa koneksi lalu tekan play.") }
                 } else {
                     update { copy(loading = false, playedIds = playedNow) }
@@ -620,6 +691,7 @@ object PlayerManager {
         resolveJob = scope.launch {
             update { copy(loading = true, error = null, current = track) }
             trackPlaybackStarted = false
+            PlaybackLog.add("MULAI", "${track.title} [${PlaybackLog.networkType(appContext)}]")
             // Resolve URL dengan retry: kadang YouTube menolak sesaat (rate limit),
             // coba lagi 2x dengan jeda sebelum menyerah.
             var uri: String? = null
@@ -641,6 +713,7 @@ object PlayerManager {
             }
             val finalUri = uri
             if (finalUri == null) {
+                PlaybackLog.add("ERROR", "Gagal resolve URL: ${lastError?.message}")
                 update { copy(loading = false, error = lastError?.message ?: "Gagal memutar lagu") }
                 return@launch
             }
@@ -696,7 +769,7 @@ object PlayerManager {
                 val s = _uiState.value
                 val unplayed = s.queue.count { it.videoId !in s.playedIds }
                 if (unplayed >= 12) return@launch
-                val related = repo.relatedTracks(track.videoId)
+                val related = repo.radioPool(track)
                     .filter { r -> r.videoId !in s.playedIds }
                     .take(15)
                 if (related.isEmpty()) return@launch

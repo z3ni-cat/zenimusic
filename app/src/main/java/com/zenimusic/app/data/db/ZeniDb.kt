@@ -48,7 +48,7 @@ data class HistoryEntity(
 // ---- Database ----
 
 class ZeniDb(context: Context) :
-    SQLiteOpenHelper(context.applicationContext, "zenimusic.db", null, 2) {
+    SQLiteOpenHelper(context.applicationContext, "zenimusic.db", null, 3) {
 
     private val refresh = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
 
@@ -91,6 +91,11 @@ class ZeniDb(context: Context) :
                 videoId TEXT PRIMARY KEY,
                 translated TEXT NOT NULL)"""
         )
+        db.execSQL(
+            """CREATE TABLE IF NOT EXISTS track_genres (
+                videoId TEXT PRIMARY KEY,
+                genre TEXT NOT NULL)"""
+        )
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
@@ -100,6 +105,13 @@ class ZeniDb(context: Context) :
                 """CREATE TABLE IF NOT EXISTS lyric_translations (
                     videoId TEXT PRIMARY KEY,
                     translated TEXT NOT NULL)"""
+            )
+        }
+        if (oldVersion < 3) {
+            db.execSQL(
+                """CREATE TABLE IF NOT EXISTS track_genres (
+                    videoId TEXT PRIMARY KEY,
+                    genre TEXT NOT NULL)"""
             )
         }
     }
@@ -353,6 +365,43 @@ class ZeniDb(context: Context) :
         writableDatabase.insertWithOnConflict(
             "lyric_translations", null, cv, SQLiteDatabase.CONFLICT_REPLACE
         )
+    }
+
+    // ---- Cache genre lagu (untuk discovery "Pilihan Buatmu") ----
+    suspend fun getGenre(videoId: String): String? = withContext(Dispatchers.IO) {
+        readableDatabase.rawQuery(
+            "SELECT genre FROM track_genres WHERE videoId = ?",
+            arrayOf(videoId)
+        ).use { c ->
+            if (c.moveToFirst()) c.getString(0).ifEmpty { null } else null
+        }
+    }
+
+    suspend fun saveGenre(videoId: String, genre: String) = withContext(Dispatchers.IO) {
+        val cv = ContentValues().apply {
+            put("videoId", videoId)
+            put("genre", genre)
+        }
+        writableDatabase.insertWithOnConflict(
+            "track_genres", null, cv, SQLiteDatabase.CONFLICT_REPLACE
+        )
+    }
+
+    /**
+     * Semua videoId yang "sudah dikenal": riwayat + favorit + isi playlist.
+     * Dipakai discovery agar tidak merekomendasikan lagu yang sudah didengar.
+     */
+    suspend fun heardVideoIds(): Set<String> = withContext(Dispatchers.IO) {
+        val out = mutableSetOf<String>()
+        readableDatabase.rawQuery(
+            """SELECT videoId FROM history
+               UNION SELECT videoId FROM favorites
+               UNION SELECT videoId FROM playlist_songs""",
+            null
+        ).use { c ->
+            while (c.moveToNext()) out.add(c.getString(0))
+        }
+        out
     }
 
     // ---- Downloaded ----

@@ -44,6 +44,7 @@ import com.zenimusic.app.data.repo.UpdateChecker
 import com.zenimusic.app.data.repo.WrappedStats
 import android.graphics.drawable.GradientDrawable
 import com.zenimusic.app.player.PlayerManager
+import com.zenimusic.app.player.PlaybackLog
 import com.zenimusic.app.ui.AppViewModel
 import com.zenimusic.app.ui.ImageLoader
 import com.zenimusic.app.ui.TrackAdapter
@@ -104,6 +105,12 @@ class MainActivity : Activity() {
     private lateinit var cariPane: LinearLayout
     private lateinit var libraryPane: LinearLayout
     private lateinit var podcastPane: LinearLayout
+    // ---- Tab Log diagnosis ----
+    private lateinit var logPane: LinearLayout
+    private lateinit var tvLog: TextView
+    private lateinit var logScroll: ScrollView
+    private var logRefresh: Runnable? = null
+    private val logHandler = android.os.Handler(android.os.Looper.getMainLooper())
 
     // ---- Podcast pane ----
     private lateinit var podcastHome: ScrollView
@@ -216,13 +223,13 @@ class MainActivity : Activity() {
             setBackgroundColor(BG)
         }
 
-        // Segmented nav: Zeni | Home | Cari | Podcast | Playlist
+        // Segmented nav: Zeni | Home | Cari | Podcast | Playlist | Log
         val segWrap = vcol { setPadding(dp(16), dp(14), dp(16), dp(8)) }
         val segBar = hrow {
             background = roundedBg(SURFACE2, dp(20).toFloat())
             setPadding(dp(4), dp(4), dp(4), dp(4))
         }
-        val segNames = listOf("Zeni", "Home", "Cari", "Podcast", "Playlist")
+        val segNames = listOf("Zeni", "Home", "Cari", "Podcast", "Playlist", "Log")
         segmentButtons = segNames.mapIndexed { i, n ->
             button(n, 12f).also { styleSegment(it, i == 1) }
         }
@@ -240,10 +247,12 @@ class MainActivity : Activity() {
         cariPane = buildCariPane()
         libraryPane = buildLibraryPane()
         podcastPane = buildPodcastPane()
+        logPane = buildLogPane()
         zeniPane.visibility = View.GONE
         cariPane.visibility = View.GONE
         libraryPane.visibility = View.GONE
         podcastPane.visibility = View.GONE
+        logPane.visibility = View.GONE
         val flp = FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
         content.addView(zeniPane, flp)
@@ -251,6 +260,7 @@ class MainActivity : Activity() {
         content.addView(cariPane, flp)
         content.addView(podcastPane, flp)
         content.addView(libraryPane, flp)
+        content.addView(logPane, flp)
         root.addView(content, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
         // Geser horizontal pada area konten → pindah tab
@@ -695,13 +705,12 @@ class MainActivity : Activity() {
         qpJob?.cancel()
         qpJob = uiScope.launch {
             try {
-                val since = System.currentTimeMillis() - 30L * 24 * 60 * 60 * 1000
-                val tracks = vm.topPlayed(since, 10)
+                val tracks = vm.discoveryPicks()
                 if (!::qpRow.isInitialized) return@launch
                 qpRow.removeAllViews()
                 if (tracks.isEmpty()) {
                     qpRow.addView(with(UiKit) {
-                        textView("Dengarkan beberapa lagu dulu, nanti muncul di sini.",
+                        textView("Dengarkan beberapa lagu dulu, nanti muncul rekomendasi di sini.",
                             13f, TEXT2).apply { setPadding(dp(4), dp(8), dp(4), dp(8)) }
                     })
                     return@launch
@@ -752,7 +761,7 @@ class MainActivity : Activity() {
         discoveryWrap = vcol {}
         pane.addView(discoveryWrap, matchWrap())
 
-        // ---- Quick Picks: rekomendasi dari riwayat dengar ----
+        // ---- Quick Picks: discovery berbasis genre favorit (bukan riwayat) ----
         val qpWrap = vcol { setPadding(dp(12), dp(4), dp(12), dp(4)) }
         qpWrap.addView(textView("Pilihan Buatmu", 15f, TEXT, bold = true).apply {
             setPadding(dp(4), dp(4), dp(4), dp(8))
@@ -1600,12 +1609,89 @@ class MainActivity : Activity() {
         podcastHome.visibility = View.VISIBLE
     }
 
+    // ================= Tab Log diagnosis =================
+
+    /** Tab Log: tampilkan ring buffer PlaybackLog + tombol Salin/Hapus. */
+    private fun buildLogPane(): LinearLayout = with(UiKit) {
+        val pane = vcol {
+            setPadding(dp(16), dp(8), dp(16), dp(16))
+        }
+        val topRow = hrow {}
+        val tvTitle = textView("Log Diagnosis", 17f, TEXT, bold = true)
+        topRow.addView(tvTitle, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        val btnCopy = button("Salin", 12f).apply { pressedFeedback() }
+        btnCopy.setOnClickListener { copyLog() }
+        val btnClear = button("Hapus", 12f).apply { pressedFeedback() }
+        btnClear.setOnClickListener {
+            PlaybackLog.clear()
+            refreshLogView()
+        }
+        topRow.addView(btnCopy)
+        topRow.addView(btnClear)
+        pane.addView(topRow, matchWrap())
+
+        val tvHint = textView(
+            "Catatan kejadian pemutar — buka tab ini lalu kirim isinya saat musik berhenti tiba-tiba.",
+            12f, TEXT2)
+        tvHint.setPadding(0, dp(4), 0, dp(8))
+        pane.addView(tvHint, matchWrap())
+
+        logScroll = ScrollView(this@MainActivity).apply { isFillViewport = true }
+        tvLog = textView("", 12f, TEXT).apply {
+            typeface = android.graphics.Typeface.MONOSPACE
+            setTextIsSelectable(true)
+            setPadding(dp(12), dp(12), dp(12), dp(12))
+            background = roundedBg(SURFACE, dp(12).toFloat())
+        }
+        logScroll.addView(tvLog, ViewGroup.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        pane.addView(logScroll, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+        return pane
+    }
+
+    private fun copyLog() {
+        try {
+            val cm = getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+                as android.content.ClipboardManager
+            cm.setPrimaryClip(android.content.ClipData.newPlainText(
+                "ZeniMusic log", PlaybackLog.text()))
+            android.widget.Toast.makeText(
+                this@MainActivity, "Log disalin — kirim ke aku ya", android.widget.Toast.LENGTH_SHORT).show()
+        } catch (_: Exception) { }
+    }
+
+    private fun refreshLogView() {
+        if (!::tvLog.isInitialized) return
+        tvLog.text = PlaybackLog.text().ifEmpty { "Belum ada kejadian." }
+        if (::logScroll.isInitialized) logScroll.post { logScroll.fullScroll(View.FOCUS_DOWN) }
+    }
+
+    private fun startLogRefresh() {
+        stopLogRefresh()
+        val r = object : Runnable {
+            override fun run() {
+                if (::logPane.isInitialized && logPane.visibility == View.VISIBLE) {
+                    refreshLogView()
+                    logHandler.postDelayed(this, 1000)
+                }
+            }
+        }
+        logRefresh = r
+        logHandler.post(r)
+    }
+
+    private fun stopLogRefresh() {
+        logRefresh?.let { logHandler.removeCallbacks(it) }
+        logRefresh = null
+    }
+
     // ================= Segment logic =================
 
     private fun selectSegment(idx: Int) = with(UiKit) {
-        val safeIdx = idx.coerceIn(0, 4)
+        val safeIdx = idx.coerceIn(0, 5)
         segmentButtons.forEachIndexed { i, b -> styleSegment(b, i == safeIdx) }
-        val panes = listOf(zeniPane, homePane, cariPane, podcastPane, libraryPane)
+        val panes = listOf(zeniPane, homePane, cariPane, podcastPane, libraryPane, logPane)
         val dir = when {
             safeIdx > currentSegment -> 1
             safeIdx < currentSegment -> -1
@@ -1624,6 +1710,7 @@ class MainActivity : Activity() {
         }
         if (safeIdx == 3) ensurePodcastHome()
         if (safeIdx == 1) refreshDaylistCard()
+        if (safeIdx == 5) startLogRefresh() else stopLogRefresh()
     }
 
     /**

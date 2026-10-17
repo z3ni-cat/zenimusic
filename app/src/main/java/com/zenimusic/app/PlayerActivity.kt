@@ -104,8 +104,13 @@ class PlayerActivity : Activity() {
     private var translateJob: Job? = null
     private var lyricIndex = -1
     private var lyricsJob: Job? = null
-    private var lyricsSync: Runnable? = null
-    private val lyricsHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private var lyricsFrameCb: Choreographer.FrameCallback? = null
+    private var scrollAnim: ValueAnimator? = null
+    // Estimasi posisi halus: uiState PlayerManager hanya diperbarui 500ms sekali;
+    // interpolasi di antara sampel membuat lirik & sapuan mengalir tiap frame.
+    private var posSampleMs = 0L
+    private var posSampleAtMs = 0L
+    private var posSamplePlaying = false
     /** Batas waktu auto-scroll ditahan setelah user scroll manual (uptime ms). */
     private var userScrollUntil = 0L
     /** Animasi highlight lirik yang sedang berjalan (dibatalkan saat baris berganti). */
@@ -164,6 +169,7 @@ class PlayerActivity : Activity() {
         buildUi()
         uiScope.launch {
             PlayerManager.uiState.collect { st ->
+                samplePosition(st)
                 val cur = st.current
                 if (cur != null && cur.videoId != currentTrack?.videoId) {
                     currentTrack = cur
@@ -598,6 +604,7 @@ class PlayerActivity : Activity() {
                 val a = ev.actionMasked
                 if (a == MotionEvent.ACTION_DOWN || a == MotionEvent.ACTION_MOVE) {
                     userScrollUntil = SystemClock.uptimeMillis() + 3000
+                    scrollAnim?.cancel()
                 }
                 false
             }
@@ -881,7 +888,7 @@ class PlayerActivity : Activity() {
     private fun updateKaraokeFrame() {
         if (lyricLines.isEmpty()) return
         val st = PlayerManager.uiState.value
-        val pos = st.positionMs
+        val pos = smoothPositionMs()
         var idx = lyricLines.indexOfLast { it.timeMs <= pos }
         if (idx < 0) idx = 0
         val cur = lyricLines[idx]
@@ -963,23 +970,93 @@ class PlayerActivity : Activity() {
         }
     }
 
+    /**
+     * Catat sampel posisi dari uiState (yang datang 500ms sekali). Jangkar
+     * interpolasi hanya diganti saat posisi melompat jauh (seek/jeda/ganti
+     * lagu/buffering) — selama putar normal, aliran frame memakai jangkar lama
+     * sehingga posisi bergerak mulus tanpa patah di tiap sampel baru.
+     */
+    private fun samplePosition(st: PlayerManager.UiState) {
+        val drifted = kotlin.math.abs(st.positionMs - smoothPositionMs()) > 350
+        if (drifted || st.isPlaying != posSamplePlaying || st.buffering) {
+            posSampleMs = st.positionMs
+            posSampleAtMs = SystemClock.elapsedRealtime()
+            posSamplePlaying = st.isPlaying && !st.buffering
+        }
+    }
+
+    /** Posisi putar terinterpolasi (halus, resolusi frame). */
+    private fun smoothPositionMs(): Long {
+        val st = PlayerManager.uiState.value
+        if (!posSamplePlaying || st.buffering) return st.positionMs
+        val est = posSampleMs + (SystemClock.elapsedRealtime() - posSampleAtMs)
+        val dur = st.durationMs
+        return if (dur > 0) est.coerceIn(0L, dur) else est.coerceAtLeast(0L)
+    }
+
+    /** Sinkronisasi lirik mengikuti frame (Choreographer) selama panel terbuka. */
     private fun startLyricsSync() {
         stopLyricsSync()
-        val r = object : Runnable {
-            override fun run() {
+        val cb = object : Choreographer.FrameCallback {
+            override fun doFrame(frameTimeNanos: Long) {
                 if (lyricsOverlay.visibility == View.VISIBLE && lyricLines.isNotEmpty()) {
                     updateLyricHighlight(false)
-                    lyricsHandler.postDelayed(this, 400)
+                    Choreographer.getInstance().postFrameCallback(this)
+                } else {
+                    lyricsFrameCb = null
                 }
             }
         }
-        lyricsSync = r
-        lyricsHandler.post(r)
+        lyricsFrameCb = cb
+        Choreographer.getInstance().postFrameCallback(cb)
     }
 
     private fun stopLyricsSync() {
-        lyricsSync?.let { lyricsHandler.removeCallbacks(it) }
-        lyricsSync = null
+        lyricsFrameCb?.let { Choreographer.getInstance().removeFrameCallback(it) }
+        lyricsFrameCb = null
+        scrollAnim?.cancel()
+        scrollAnim = null
+    }
+
+    /** Gulir daftar lirik meluncur lembut ke [targetY] (±650ms, melambat di akhir). */
+    private fun glideScrollTo(targetY: Int) {
+        val from = lyricsScroll.scrollY
+        if (from == targetY) return
+        scrollAnim?.cancel()
+        scrollAnim = ValueAnimator.ofInt(from, targetY).apply {
+            duration = 650
+            interpolator = android.view.animation.DecelerateInterpolator()
+            addUpdateListener { a ->
+                if (SystemClock.uptimeMillis() < userScrollUntil) {
+                    cancel()
+                    return@addUpdateListener
+                }
+                lyricsScroll.scrollTo(0, a.animatedValue as Int)
+            }
+            start()
+        }
+    }
+
+    /**
+     * Redup + kecilkan baris lirik bertahap mengikuti jaraknya dari baris aktif
+     * (sentuhan khas Apple Music). Transformasi view — tanpa layout ulang.
+     */
+    private fun applyLyricDimming(active: Int) {
+        lyricViews.forEachIndexed { i, tv ->
+            val d = kotlin.math.abs(i - active)
+            tv.pivotX = 0f
+            tv.pivotY = tv.height / 2f
+            if (d == 0) {
+                tv.alpha = 1f
+                tv.scaleX = 1f
+                tv.scaleY = 1f
+            } else {
+                tv.alpha = (1f - 0.11f * d).coerceAtLeast(0.35f)
+                val s = (1f - 0.015f * d).coerceAtLeast(0.92f)
+                tv.scaleX = s
+                tv.scaleY = s
+            }
+        }
     }
 
     // ================= Bab Mix =================
@@ -1098,7 +1175,7 @@ class PlayerActivity : Activity() {
             // setelah tap, pakai posisi target (sudah seek)
             lyricLines.getOrNull(lyricIndex)?.timeMs ?: PlayerManager.uiState.value.positionMs
         } else {
-            PlayerManager.uiState.value.positionMs
+            smoothPositionMs()
         }
         var idx = lyricLines.indexOfLast { it.timeMs <= pos }
         if (idx < 0) idx = 0
@@ -1113,11 +1190,12 @@ class PlayerActivity : Activity() {
         lyricIndex = idx
         val v = lyricViews.getOrNull(idx) ?: return
         animateLyricLine(v, activate = true)
+        applyLyricDimming(idx)
         // scroll agar baris aktif di tengah layar (jeda bila user sedang scroll manual)
         if (SystemClock.uptimeMillis() > userScrollUntil) {
             lyricsScroll.post {
                 val y = v.top - lyricsScroll.height / 2 + v.height / 2
-                lyricsScroll.smoothScrollTo(0, y.coerceAtLeast(0))
+                glideScrollTo(y.coerceAtLeast(0))
             }
         }
     }

@@ -40,17 +40,60 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val _searchError = MutableStateFlow<String?>(null)
     val searchError: StateFlow<String?> = _searchError
 
+    // Pagination pencarian: penanda halaman berikutnya dari NewPipe.
+    private var searchQuery: String = ""
+    private var searchNextPage: org.schabi.newpipe.extractor.Page? = null
+    private var searchPageCount = 0
+
+    private val _loadingMore = MutableStateFlow(false)
+    val loadingMore: StateFlow<Boolean> = _loadingMore
+
+    /** Masih ada halaman hasil berikutnya yang bisa dimuat? */
+    val hasMoreSearch: Boolean get() = searchNextPage != null
+
     fun search(query: String) {
         if (query.isBlank()) return
+        val q = query.trim()
         viewModelScope.launch {
             _searching.value = true
             _searchError.value = null
+            searchQuery = q
+            searchNextPage = null
+            searchPageCount = 0
             try {
-                _searchResults.value = repo.search(query.trim())
+                val page = repo.searchFirstPage(q)
+                _searchResults.value = page.tracks
+                searchNextPage = page.nextPage
+                searchPageCount = 1
             } catch (e: Exception) {
                 _searchError.value = e.message ?: "Pencarian gagal. Coba lagi."
             }
             _searching.value = false
+        }
+    }
+
+    /** Muat halaman hasil berikutnya (dipanggil UI saat scroll mendekati bawah). */
+    fun loadMoreSearch() {
+        val next = searchNextPage ?: return
+        if (_searching.value || _loadingMore.value) return
+        if (searchPageCount >= 10) { searchNextPage = null; return }
+        viewModelScope.launch {
+            _loadingMore.value = true
+            try {
+                val page = repo.searchNextPage(searchQuery, next)
+                val seen = _searchResults.value.map { it.videoId }.toHashSet()
+                val fresh = page.tracks.filter { seen.add(it.videoId) }
+                if (fresh.isEmpty()) {
+                    searchNextPage = null
+                } else {
+                    _searchResults.value = _searchResults.value + fresh
+                    searchNextPage = page.nextPage
+                    searchPageCount++
+                }
+            } catch (e: Exception) {
+                // Gagal memuat lanjutan: biarkan pengguna mencoba lagi lewat scroll.
+            }
+            _loadingMore.value = false
         }
     }
 

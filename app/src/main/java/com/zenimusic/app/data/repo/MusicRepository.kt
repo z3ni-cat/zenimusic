@@ -37,35 +37,55 @@ class MusicRepository(
         }
     }
 
-    /** Search YouTube via NewPipe Extractor. Must be called off the main thread. */
-    suspend fun search(query: String): List<Track> = withContext(Dispatchers.IO) {
-        // Filter khusus musik (ala YouTube Music) — bukan video dokumenter/vlog.
-        val handler = service.searchQHFactory.fromQuery(
-            query,
-            listOf(org.schabi.newpipe.extractor.services.youtube.linkHandler.YoutubeSearchQueryHandlerFactory.MUSIC_SONGS),
-            ""
+    /** Satu halaman hasil pencarian + penanda halaman berikutnya (null = habis). */
+    data class SearchPage(
+        val tracks: List<Track>,
+        val nextPage: org.schabi.newpipe.extractor.Page?
+    )
+
+    private fun searchHandler(query: String) = service.searchQHFactory.fromQuery(
+        query,
+        listOf(org.schabi.newpipe.extractor.services.youtube.linkHandler.YoutubeSearchQueryHandlerFactory.MUSIC_SONGS),
+        ""
+    )
+
+    private fun StreamInfoItem.toTrackOrNull(): Track? = try {
+        val videoId = videoIdFromUrl(url) ?: return null
+        val thumb = thumbnails?.maxByOrNull { it.height }?.url ?: ""
+        Track(
+            videoId = videoId,
+            title = name ?: "Unknown title",
+            channel = uploaderName ?: "Unknown",
+            thumbnailUrl = thumb,
+            durationSec = duration
         )
-        val info = SearchInfo.getInfo(service, handler)
+    } catch (e: Exception) {
+        null
+    }
+
+    /** Search YouTube via NewPipe Extractor. Must be called off the main thread. */
+    suspend fun search(query: String): List<Track> = searchFirstPage(query).tracks
+
+    /** Halaman pertama pencarian (filter khusus musik ala YouTube Music). */
+    suspend fun searchFirstPage(query: String): SearchPage = withContext(Dispatchers.IO) {
+        val info = SearchInfo.getInfo(service, searchHandler(query))
         val tracks = info.relatedItems
             .filterIsInstance<StreamInfoItem>()
-            .mapNotNull { item ->
-                try {
-                    val videoId = videoIdFromUrl(item.url) ?: return@mapNotNull null
-                    val thumb = item.thumbnails?.maxByOrNull { it.height }?.url ?: ""
-                    Track(
-                        videoId = videoId,
-                        title = item.name ?: "Unknown title",
-                        channel = item.uploaderName ?: "Unknown",
-                        thumbnailUrl = thumb,
-                        durationSec = item.duration
-                    )
-                } catch (e: Exception) {
-                    null
-                }
-            }
+            .mapNotNull { it.toTrackOrNull() }
         tracks.forEach { dao.upsertSong(it.toEntity()) }
-        tracks
+        SearchPage(tracks, if (info.hasNextPage()) info.nextPage else null)
     }
+
+    /** Halaman berikutnya dari pencarian yang sama. */
+    suspend fun searchNextPage(query: String, page: org.schabi.newpipe.extractor.Page): SearchPage =
+        withContext(Dispatchers.IO) {
+            val more = SearchInfo.getMoreItems(service, searchHandler(query), page)
+            val tracks = more.items
+                .filterIsInstance<StreamInfoItem>()
+                .mapNotNull { it.toTrackOrNull() }
+            tracks.forEach { dao.upsertSong(it.toEntity()) }
+            SearchPage(tracks, if (more.hasNextPage()) more.nextPage else null)
+        }
 
     /** Resolve the best audio-only stream URL for a YouTube video id. */
     suspend fun resolveAudioUrl(videoId: String): String = withContext(Dispatchers.IO) {

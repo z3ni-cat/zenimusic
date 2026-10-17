@@ -140,6 +140,13 @@ class MainActivity : Activity() {
     private lateinit var progressBar: ProgressBar
     private lateinit var tvSearchError: TextView
     private lateinit var searchAdapter: TrackAdapter
+    // Riwayat pencarian (lokal, SharedPreferences) + wadah UI-nya.
+    private lateinit var historyBox: LinearLayout
+    private lateinit var historyList: LinearLayout
+    private var searchFooter: View? = null
+    private val searchPrefs by lazy {
+        getSharedPreferences("search_history", MODE_PRIVATE)
+    }
 
     // ---- Quick Picks ----
     private lateinit var qpRow: LinearLayout
@@ -909,6 +916,26 @@ class MainActivity : Activity() {
         pane.addView(lvSuggestions, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
 
+        // Riwayat pencarian (muncul saat kolom cari kosong, ala YMusic)
+        historyBox = vcol {
+            visibility = View.GONE
+            setPadding(dp(16), dp(2), dp(16), dp(4))
+        }
+        val histHeader = hrow { gravity = Gravity.CENTER_VERTICAL }
+        histHeader.addView(textView("Riwayat pencarian", 13f, TEXT2, bold = true),
+            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        val btnClearHist = textView("Bersihkan riwayat", 13f, ACCENT2).apply {
+            isClickable = true
+            isFocusable = true
+            setPadding(dp(8), dp(6), 0, dp(6))
+            setOnClickListener { clearSearchHistory() }
+        }
+        histHeader.addView(btnClearHist)
+        historyBox.addView(histHeader, matchWrap())
+        historyList = vcol {}
+        historyBox.addView(historyList, matchWrap())
+        pane.addView(historyBox, matchWrap())
+
         progressBar = ProgressBar(this@MainActivity).apply { visibility = View.GONE }
         val pbWrap = LinearLayout(this@MainActivity).apply {
             gravity = Gravity.CENTER
@@ -933,12 +960,34 @@ class MainActivity : Activity() {
             onDownloadHandler = { t -> vm.download(t) },
             onAddToPlaylist = { t -> showAddToPlaylistDialog(t) }
         )
+        // Footer pemuatan halaman berikutnya (muncul saat load-more berjalan)
+        val footerWrap = LinearLayout(this@MainActivity).apply {
+            gravity = Gravity.CENTER
+            setPadding(0, dp(14), 0, dp(14))
+            addView(ProgressBar(this@MainActivity))
+            visibility = View.GONE
+        }
+        searchFooter = footerWrap
+        lv.addFooterView(footerWrap)
         lv.adapter = searchAdapter
+        // Scroll mendekati bawah → muat halaman hasil berikutnya otomatis
+        lv.setOnScrollListener(object : android.widget.AbsListView.OnScrollListener {
+            override fun onScrollStateChanged(view: android.widget.AbsListView?, state: Int) {}
+            override fun onScroll(
+                view: android.widget.AbsListView?, firstVisible: Int,
+                visibleCount: Int, totalCount: Int
+            ) {
+                if (totalCount > 0 && firstVisible + visibleCount >= totalCount - 4) {
+                    vm.loadMoreSearch()
+                }
+            }
+        })
         val tvEmpty = emptyView("Ketik di atas untuk mencari lagu")
         pane.addView(tvEmpty, matchWrap())
         lv.emptyView = tvEmpty
         pane.addView(lv, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+        refreshHistoryUi()
         return pane
     }
 
@@ -953,6 +1002,7 @@ class MainActivity : Activity() {
         }
         if (query.trim().length < 2) {
             hideSuggestions()
+            updateHistoryVisibility()
             return
         }
         suggestionJob = uiScope.launch {
@@ -975,6 +1025,84 @@ class MainActivity : Activity() {
 
     private fun hideSuggestions() {
         if (::lvSuggestions.isInitialized) lvSuggestions.visibility = View.GONE
+    }
+
+    // ================= Riwayat pencarian =================
+
+    private fun loadSearchHistory(): List<String> {
+        val raw = searchPrefs.getString("queries", "") ?: ""
+        return raw.split("\n").map { it.trim() }.filter { it.isNotEmpty() }
+    }
+
+    private fun storeSearchHistory(list: List<String>) {
+        searchPrefs.edit().putString("queries", list.take(20).joinToString("\n")).apply()
+    }
+
+    /** Simpan kueri ke riwayat (terbaru di atas, tanpa duplikat). */
+    private fun saveSearchQuery(q: String) {
+        val query = q.trim()
+        if (query.isEmpty()) return
+        val list = loadSearchHistory()
+            .filter { !it.equals(query, ignoreCase = true) }
+            .toMutableList()
+        list.add(0, query)
+        storeSearchHistory(list)
+        refreshHistoryUi()
+    }
+
+    private fun removeSearchQuery(q: String) {
+        storeSearchHistory(loadSearchHistory().filter { !it.equals(q, ignoreCase = true) })
+        refreshHistoryUi()
+    }
+
+    private fun clearSearchHistory() {
+        searchPrefs.edit().remove("queries").apply()
+        refreshHistoryUi()
+    }
+
+    /** Bangun ulang baris-baris riwayat (maks 8 tampil) + atur visibilitas kotaknya. */
+    private fun refreshHistoryUi() = with(UiKit) {
+        if (!::historyBox.isInitialized) return@with
+        val hist = loadSearchHistory()
+        historyList.removeAllViews()
+        for (q in hist.take(8)) {
+            val row = hrow {
+                gravity = Gravity.CENTER_VERTICAL
+                isClickable = true
+                isFocusable = true
+                pressedFeedback()
+                setPadding(0, dp(9), 0, dp(9))
+            }
+            row.addView(textView("🕐", 13f, TEXT2).apply {
+                setPadding(0, 0, dp(12), 0)
+            })
+            row.addView(textView(q, 14f, TEXT).apply {
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            val del = textView("✕", 13f, TEXT2).apply {
+                isClickable = true
+                isFocusable = true
+                setPadding(dp(10), dp(4), dp(2), dp(4))
+                setOnClickListener { removeSearchQuery(q) }
+            }
+            row.addView(del)
+            row.setOnClickListener {
+                suppressSuggestions = true
+                etSearch.setText(q)
+                etSearch.setSelection(q.length)
+                doSearch()
+            }
+            historyList.addView(row, matchWrap())
+        }
+        updateHistoryVisibility()
+    }
+
+    /** Riwayat hanya tampil saat kolom cari kosong dan riwayat tidak kosong. */
+    private fun updateHistoryVisibility() {
+        if (!::historyBox.isInitialized || !::etSearch.isInitialized) return
+        val show = etSearch.text.toString().isBlank() && loadSearchHistory().isNotEmpty()
+        historyBox.visibility = if (show) View.VISIBLE else View.GONE
     }
 
     /** Perbarui label kartu Daylist sesuai slot waktu aktif. */
@@ -1907,6 +2035,11 @@ class MainActivity : Activity() {
     private fun collectFlows() {
         uiScope.launch { vm.searchResults.collect { searchAdapter.submit(it) } }
         uiScope.launch {
+            vm.loadingMore.collect { loading ->
+                searchFooter?.visibility = if (loading) View.VISIBLE else View.GONE
+            }
+        }
+        uiScope.launch {
             vm.searching.collect { searching ->
                 (progressBar.tag as? View)?.visibility = if (searching) View.VISIBLE else View.GONE
             }
@@ -1996,6 +2129,8 @@ class MainActivity : Activity() {
         hideSuggestions()
         suppressSuggestions = false
         val q = etSearch.text.toString()
+        saveSearchQuery(q)
+        if (::historyBox.isInitialized) historyBox.visibility = View.GONE
         vm.search(q)
     }
 

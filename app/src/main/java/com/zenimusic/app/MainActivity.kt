@@ -160,6 +160,8 @@ class MainActivity : Activity() {
     private lateinit var acctWrap: LinearLayout
     private lateinit var acctRow: LinearLayout
     private var acctJob: Job? = null
+    private var lastAcctTracks: List<Track> = emptyList()
+    private var lastAcctFetchMs: Long = 0L
 
     // ---- Discovery (Home) ----
     private lateinit var discoveryWrap: LinearLayout
@@ -378,11 +380,15 @@ class MainActivity : Activity() {
         } catch (e: Exception) { /* abaikan */ }
     }
 
-    /** Dari pemutar: nama artis diketuk → buka tab Cari dengan nama artis itu. */
+    /** Dari pemutar: nama artis diketuk → buka tab Cari & langsung cari. */
     private fun handleArtistIntent(intent: Intent?) {
         val q = intent?.getStringExtra(EXTRA_ARTIST)?.takeIf { it.isNotBlank() } ?: return
         intent.removeExtra(EXTRA_ARTIST)
         selectSegment(2) // tab Cari
+        // Cegah saran pencarian muncul lagi & menutupi hasil (v3.8.1):
+        // setText memicu penjaga teks yang menjadwalkan saran 350ms kemudian.
+        suppressSuggestions = true
+        suggestionJob?.cancel()
         etSearch.setText(q)
         doSearch()
     }
@@ -1118,29 +1124,48 @@ class MainActivity : Activity() {
 
     /** Muat seksi "Berdasarkan Pencarianmu" (hanya bila login YouTube). */
     private fun loadAccountHome() {
-        acctJob?.cancel()
         if (!vm.accountLoggedIn.value) {
             if (::acctWrap.isInitialized) acctWrap.visibility = View.GONE
             return
         }
+        // Dalam 5 menit terakhir: cukup acak ulang urutan dari salinan terakhir
+        // (isi terasa berganti tanpa memanggil jaringan terus-menerus).
+        val now = System.currentTimeMillis()
+        if (lastAcctTracks.isNotEmpty() && now - lastAcctFetchMs < 5 * 60_000L) {
+            renderAccountHome(lastAcctTracks.shuffled())
+            return
+        }
+        acctJob?.cancel()
         acctJob = uiScope.launch {
             try {
                 val tracks = vm.accountHomeTracks()
-                if (!::acctWrap.isInitialized) return@launch
-                if (tracks.isEmpty()) {
-                    acctWrap.visibility = View.GONE
-                    return@launch
-                }
-                acctRow.removeAllViews()
-                for (t in tracks) acctRow.addView(accountPickCard(t))
-                acctWrap.visibility = View.VISIBLE
+                lastAcctTracks = tracks
+                lastAcctFetchMs = System.currentTimeMillis()
+                renderAccountHome(tracks.shuffled())
             } catch (_: Exception) {
                 if (::acctWrap.isInitialized) acctWrap.visibility = View.GONE
             }
         }
     }
 
-    private fun accountPickCard(t: Track): LinearLayout = with(UiKit) {
+    private fun renderAccountHome(tracks: List<Track>) {
+        if (!::acctWrap.isInitialized) return
+        if (tracks.isEmpty()) {
+            acctWrap.visibility = View.GONE
+            return
+        }
+        acctRow.removeAllViews()
+        for (t in tracks) acctRow.addView(homePickCard(t) { vm.play(t, listOf(t)) })
+        acctWrap.visibility = View.VISIBLE
+    }
+
+    /**
+     * Kartu Home BERSAMA untuk "Pilihan Buatmu" & "Berdasarkan Pencarianmu"
+     * (v3.8.1): ukuran gambar & tinggi teks DIKUNCI sama untuk semua kartu —
+     * judul selalu dicadangkan 2 baris, jadi kartu tidak ada yang lebih
+     * besar/kecil hanya karena judulnya panjang atau pendek.
+     */
+    private fun homePickCard(t: Track, onClick: () -> Unit): LinearLayout = with(UiKit) {
         val card = vcol {
             background = cardBg()
             setPadding(dp(8), dp(8), dp(8), dp(8))
@@ -1153,18 +1178,22 @@ class MainActivity : Activity() {
             roundedCorners(10)
         }
         ImageLoader.load(t.thumbnailUrl, iv)
-        card.addView(iv, LinearLayout.LayoutParams(dp(104), dp(104)))
+        card.addView(iv, LinearLayout.LayoutParams(dp(120), dp(120)))
         card.addView(textView(t.title, 12f, TEXT, bold = true).apply {
             maxLines = 2
+            minLines = 2
             ellipsize = TextUtils.TruncateAt.END
             setPadding(0, dp(6), 0, 0)
-        }, LinearLayout.LayoutParams(dp(104), ViewGroup.LayoutParams.WRAP_CONTENT))
+        }, LinearLayout.LayoutParams(dp(120), ViewGroup.LayoutParams.WRAP_CONTENT))
         card.addView(textView(t.channel, 11f, TEXT2).apply {
             maxLines = 1
             ellipsize = TextUtils.TruncateAt.END
-        }, LinearLayout.LayoutParams(dp(104), ViewGroup.LayoutParams.WRAP_CONTENT))
-        // Ketuk: putar lagu ini, radio meneruskan seperti YMusic.
-        card.setOnClickListener { vm.play(t, listOf(t)) }
+        }, LinearLayout.LayoutParams(dp(120), ViewGroup.LayoutParams.WRAP_CONTENT))
+        card.setOnClickListener { onClick() }
+        card.layoutParams = LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply { rightMargin = dp(10) }
         card
     }
 
@@ -1182,40 +1211,11 @@ class MainActivity : Activity() {
                     })
                     return@launch
                 }
-                for (t in tracks) qpRow.addView(quickPickCard(t, tracks))
+                // Acak urutan tiap dimuat — isi terasa berganti, tidak itu-itu saja.
+                val display = tracks.shuffled()
+                for (t in display) qpRow.addView(homePickCard(t) { vm.play(t, display) })
             } catch (_: Exception) { /* abaikan */ }
         }
-    }
-
-    private fun quickPickCard(t: Track, queue: List<Track>): LinearLayout = with(UiKit) {
-        val card = vcol {
-            background = cardBg()
-            setPadding(dp(8), dp(8), dp(8), dp(8))
-            pressedFeedback()
-            isClickable = true
-            isFocusable = true
-        }
-        val iv = ImageView(this@MainActivity).apply {
-            scaleType = ImageView.ScaleType.CENTER_CROP
-            roundedCorners(10)
-        }
-        ImageLoader.load(t.thumbnailUrl, iv)
-        card.addView(iv, LinearLayout.LayoutParams(dp(104), dp(104)))
-        card.addView(textView(t.title, 12f, TEXT, bold = true).apply {
-            maxLines = 2
-            ellipsize = TextUtils.TruncateAt.END
-            setPadding(0, dp(6), 0, 0)
-        }, LinearLayout.LayoutParams(dp(104), ViewGroup.LayoutParams.WRAP_CONTENT))
-        card.addView(textView(t.channel, 11f, TEXT2).apply {
-            maxLines = 1
-            ellipsize = TextUtils.TruncateAt.END
-        }, LinearLayout.LayoutParams(dp(104), ViewGroup.LayoutParams.WRAP_CONTENT))
-        card.setOnClickListener { vm.play(t, queue) }
-        card.layoutParams = LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.WRAP_CONTENT,
-            ViewGroup.LayoutParams.WRAP_CONTENT
-        ).apply { rightMargin = dp(10) }
-        return card
     }
 
     // ================= Halaman Home (search) =================
@@ -2352,6 +2352,11 @@ class MainActivity : Activity() {
         currentSegment = safeIdx
         refreshNav()
         if (safeIdx == 0) refreshBlockedInfo()
+        if (safeIdx == 1) {
+            // Masuk Home: segarkan kedua seksi rekomendasi (urutan diacak).
+            loadQuickPicks()
+            loadAccountHome()
+        }
         panes.forEachIndexed { i, pane ->
             if (i == safeIdx) {
                 val wasGone = pane.visibility != View.VISIBLE
@@ -2830,6 +2835,7 @@ class MainActivity : Activity() {
     private fun doSearch() {
         hideKeyboard()
         hideSuggestions()
+        suggestionJob?.cancel() // jangan biarkan saran tertunda menutupi hasil
         suppressSuggestions = false
         val q = etSearch.text.toString()
         saveSearchQuery(q)

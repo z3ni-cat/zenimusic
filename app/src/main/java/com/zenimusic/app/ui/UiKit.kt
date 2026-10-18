@@ -68,9 +68,17 @@ object UiKit {
             cornerRadius = radiusPx
         }
 
-    /** Card surface standar: #242130, corner 16dp. */
+    /**
+     * Card surface standar (v3.8.0: sentuhan kaca): #242130 sedikit tembus
+     * pandang + garis tepi terang tipis, corner 16dp.
+     */
     fun Context.cardBg(): GradientDrawable =
-        roundedBg(SURFACE, dp(16).toFloat())
+        GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            cornerRadius = dp(16).toFloat()
+            setColor(0xF2 shl 24 or (SURFACE and 0x00FFFFFF))
+            setStroke(dp(1), 0x1FFFFFFF)
+        }
 
     /** Tombol lingkaran solid (untuk tombol aksi 36/44/48dp). */
     fun circleBg(color: Int = SURFACE2): GradientDrawable =
@@ -343,11 +351,13 @@ object UiKit {
         sb.splitTrack = false
     }
 
-    /** Dialog dengan window background surface rounded 20dp. Panggil setelah show(). */
+    /** Dialog dengan window background kaca rounded 20dp. Panggil setelah show(). */
     fun AlertDialog.styleAsCard() {
         window?.setBackgroundDrawable(
-            roundedBg(SURFACE, context.dp(20).toFloat())
+            context.glassBg(20, 245)
         )
+        // Muncul memegas lembut (sistem gerak v3.8.0).
+        try { window?.decorView?.springIn(300) } catch (e: Exception) { /* abaikan */ }
     }
 
     /** Ambil drawable id logo; 0 bila tidak ada. */
@@ -366,11 +376,58 @@ object UiKit {
     private val easeOut = android.view.animation.DecelerateInterpolator(1.2f)
     private val bounce = android.view.animation.OvershootInterpolator(1.4f)
 
+    // ================= Motion (v3.8.0 "Smooth") =================
+    // Sistem gerak terpadu ala BitChord/Apple: kurva konsisten di semua layar,
+    // hanya transformasi & alpha (murah, mulus di layar 120Hz).
+    /** Kurva lembar/sheet ala Apple: cepat di awal, mengendap sangat halus. */
+    val EASE_APPLE = android.view.animation.PathInterpolator(0.32f, 0.72f, 0f, 1f)
+    /** Pegas lembut: sedikit melampaui lalu mengendap (untuk pop & pil). */
+    val SPRING_SOFT = android.view.animation.PathInterpolator(0.34f, 1.28f, 0.64f, 1f)
+    const val DUR_FAST = 180L
+    const val DUR_MED = 320L
+    const val DUR_SLOW = 480L
+
+    /** Muncul memegas: mengembang kecil + pudar masuk (dialog, menu, lembaran). */
+    fun View.springIn(duration: Long = DUR_MED) {
+        scaleX = 0.92f; scaleY = 0.92f; alpha = 0f
+        animate().scaleX(1f).scaleY(1f).alpha(1f)
+            .setDuration(duration).setInterpolator(SPRING_SOFT).start()
+    }
+
+    /** Meluncur naik seperti lembaran (sheet) dengan kurva Apple. */
+    fun View.sheetUp(distanceDp: Int = 56, duration: Long = DUR_SLOW) {
+        alpha = 0f; translationY = context.dp(distanceDp).toFloat()
+        animate().alpha(1f).translationY(0f)
+            .setDuration(duration).setInterpolator(EASE_APPLE).start()
+    }
+
+    // ================= Bahan kaca gelap =================
+    /**
+     * Latar kaca gelap: permukaan semi-transparan + garis tepi terang tipis.
+     * [alpha] 0-255 untuk isi (default ±88% legam). Sudut [radiusDp].
+     */
+    fun Context.glassBg(radiusDp: Int, alpha: Int = 224): GradientDrawable =
+        GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            cornerRadius = dp(radiusDp).toFloat()
+            setColor((alpha shl 24) or (SURFACE and 0x00FFFFFF))
+            setStroke(dp(1), 0x2EFFFFFF)
+        }
+
+    /** Kaca bentuk pil (sudut setengah tinggi) untuk bar melayang. */
+    fun Context.glassPillBg(alpha: Int = 224): GradientDrawable =
+        GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            cornerRadius = dp(100).toFloat()
+            setColor((alpha shl 24) or (SURFACE and 0x00FFFFFF))
+            setStroke(dp(1), 0x2EFFFFFF)
+        }
+
     /**
      * Fade + slide masuk. direction: 1 = dari kanan, -1 = dari kiri, 0 = dari bawah.
      * Durasi 220ms — cepat dan halus.
      */
-    fun View.fadeSlideIn(direction: Int = 0, duration: Long = 220) {
+    fun View.fadeSlideIn(direction: Int = 0, duration: Long = DUR_MED) {
         val d = context.dp(24).toFloat()
         alpha = 0f
         when (direction) {
@@ -379,22 +436,22 @@ object UiKit {
             else -> { translationX = 0f; translationY = d }
         }
         animate().alpha(1f).translationX(0f).translationY(0f)
-            .setDuration(duration).setInterpolator(easeOut).start()
+            .setDuration(duration).setInterpolator(EASE_APPLE).start()
     }
 
     /** Efek pop (memantul lembut) — untuk tombol play, heart, dsb. */
-    fun View.pop(duration: Long = 280) {
+    fun View.pop(duration: Long = DUR_MED) {
         scaleX = 0.85f; scaleY = 0.85f
         animate().scaleX(1f).scaleY(1f)
-            .setDuration(duration).setInterpolator(bounce).start()
+            .setDuration(duration).setInterpolator(SPRING_SOFT).start()
     }
 
     /** Slide naik halus — untuk mini player saat muncul. */
-    fun View.slideUpIn(duration: Long = 260) {
+    fun View.slideUpIn(duration: Long = 380) {
         val d = context.dp(64).toFloat()
         alpha = 0f; translationY = d
         animate().alpha(1f).translationY(0f)
-            .setDuration(duration).setInterpolator(easeOut).start()
+            .setDuration(duration).setInterpolator(EASE_APPLE).start()
     }
 
     /**

@@ -229,6 +229,12 @@ class MainActivity : Activity() {
 
     // ---- Mini player (slim minimalis, line-icon) ----
     private lateinit var miniPlayer: LinearLayout
+    /** Bar melayang bawah (mini player + navigasi pil kaca) — v3.8.0. */
+    private lateinit var floatBar: LinearLayout
+    private lateinit var contentPane: FrameLayout
+    private lateinit var ivMiniCover: ImageView
+    private var miniCoverId: String? = null
+    private var lastNavActive = 1
     private lateinit var tvMiniTitle: TextView
     private lateinit var tvMiniChannel: TextView
     private lateinit var btnMiniPrev: ImageView
@@ -340,6 +346,7 @@ class MainActivity : Activity() {
         vm = AppViewModel(app)
 
         buildUi()
+        applyPerfMode()
         collectFlows()
         ensureNotifPermission()
         handleArtistIntent(intent)
@@ -351,6 +358,24 @@ class MainActivity : Activity() {
         super.onNewIntent(intent)
         setIntent(intent)
         handleArtistIntent(intent)
+    }
+
+    /** Mode performa: minta refresh rate layar tertinggi (gerak 120Hz). */
+    private fun applyPerfMode() {
+        try {
+            val on = getSharedPreferences("zeni_prefs", MODE_PRIVATE)
+                .getBoolean("perf_mode", false)
+            @Suppress("DEPRECATION")
+            val disp = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+                display
+            } else {
+                windowManager.defaultDisplay
+            }
+            val maxRate = disp?.supportedModes?.maxOfOrNull { it.refreshRate } ?: 0f
+            val lp = window.attributes
+            lp.preferredRefreshRate = if (on) maxRate else 0f
+            window.attributes = lp
+        } catch (e: Exception) { /* abaikan */ }
     }
 
     /** Dari pemutar: nama artis diketuk → buka tab Cari dengan nama artis itu. */
@@ -365,7 +390,8 @@ class MainActivity : Activity() {
     // ================= UI =================
 
     private fun buildUi() = with(UiKit) {
-        val root = vcol {
+        // Root FrameLayout: konten penuh, bar kaca melayang di atasnya (v3.8.0).
+        val root = FrameLayout(this@MainActivity).apply {
             setBackgroundColor(BG)
         }
 
@@ -392,22 +418,33 @@ class MainActivity : Activity() {
         content.addView(podcastPane, flp)
         content.addView(libraryPane, flp)
         content.addView(logPane, flp)
-        root.addView(content, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+        contentPane = content
+        root.addView(content, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        content.setPadding(0, 0, 0, dp(88))
         // Geser horizontal pada area konten → pindah tab
         content.setOnTouchListener(this@MainActivity.TabSwipeListener { direction -> selectSegment(currentSegment + direction) })
 
-        // Mini player — slim bar minimalis mengambang (line-icon)
-        val miniWrap = LinearLayout(this@MainActivity).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(12), dp(4), dp(12), dp(12))
+        // ===== Bar melayang (v3.8.0): mini player + navigasi pil kaca =====
+        floatBar = vcol {
+            setPadding(dp(12), 0, dp(12), dp(10))
         }
         miniPlayer = hrow {
-            background = roundedBg(SURFACE, dp(18).toFloat())
-            setPadding(dp(16), dp(8), dp(8), dp(8))
+            background = glassPillBg()
+            elevation = dp(10).toFloat()
+            setPadding(dp(10), dp(8), dp(8), dp(8))
             visibility = View.GONE
             pressedFeedback()
+            gravity = Gravity.CENTER_VERTICAL
         }
+        ivMiniCover = ImageView(this@MainActivity).apply {
+            scaleType = ImageView.ScaleType.CENTER_CROP
+            setBackgroundColor(SURFACE2)
+            roundedCorners(14)
+        }
+        miniPlayer.addView(ivMiniCover, LinearLayout.LayoutParams(dp(44), dp(44)))
+        miniPlayer.addView(View(this@MainActivity),
+            LinearLayout.LayoutParams(dp(10), 1))
         val miniCol = vcol {
             gravity = Gravity.CENTER_VERTICAL
         }
@@ -440,15 +477,18 @@ class MainActivity : Activity() {
         miniPlayer.addView(miniSpinner, LinearLayout.LayoutParams(dp(40), dp(40)))
         miniPlayer.addView(btnMiniNext)
         miniPlayer.setOnClickListener {
+            // Buka pemutar dengan transisi membesar (animasi diatur PlayerActivity).
             startActivity(Intent(this@MainActivity, PlayerActivity::class.java))
+            @Suppress("DEPRECATION")
+            overridePendingTransition(R.anim.act_open_enter, R.anim.act_open_exit)
         }
-        miniWrap.addView(miniPlayer, matchWrap())
-        root.addView(miniWrap, matchWrap())
+        floatBar.addView(miniPlayer, matchWrap().apply { bottomMargin = dp(8) })
 
-        // Navigasi bawah: ikon saja (Zenicat, Home, Cari, Podcast, Playlist, Log)
+        // Navigasi bawah pil kaca: ikon saja (Zenicat, Home, Cari, Podcast, Playlist, Log)
         val navBar = hrow {
-            background = ColorDrawable(SURFACE)
-            setPadding(dp(6), dp(6), dp(6), dp(8))
+            background = glassPillBg()
+            elevation = dp(10).toFloat()
+            setPadding(dp(6), dp(6), dp(6), dp(6))
             gravity = Gravity.CENTER_VERTICAL
         }
         navButtons = navKinds.mapIndexed { i, kind ->
@@ -469,9 +509,24 @@ class MainActivity : Activity() {
                 Gravity.CENTER))
             navBar.addView(slot, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         }
-        root.addView(navBar, matchWrap())
+        floatBar.addView(navBar, matchWrap())
+        root.addView(floatBar, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            Gravity.BOTTOM))
 
         setContentView(root)
+        updateContentPadding()
+    }
+
+    /** Sesuaikan padding bawah konten dengan tinggi bar melayang saat ini. */
+    private fun updateContentPadding() {
+        if (!::floatBar.isInitialized || !::contentPane.isInitialized) return
+        floatBar.post {
+            if (!::floatBar.isInitialized) return@post
+            val h = floatBar.height
+            if (h > 0) with(UiKit) { contentPane.setPadding(0, 0, 0, h + dp(8)) }
+        }
     }
 
     /** Segarkan tampilan ikon navigasi bawah sesuai tab aktif. */
@@ -481,9 +536,12 @@ class MainActivity : Activity() {
             val active = i == currentSegment
             iv.setImageDrawable(ZeniIcons.drawable(
                 this@MainActivity, navKinds[i], if (active) ACCENT1 else TEXT2))
-            iv.background = if (active) roundedBg(SURFACE2, dp(16).toFloat())
+            iv.background = if (active) roundedBg(SURFACE2, dp(20).toFloat())
                 else ColorDrawable(0x00000000)
+            // Ikon aktif yang baru dipilih memegas lembut (sistem gerak v3.8.0).
+            if (active && lastNavActive != i) iv.pop()
         }
+        lastNavActive = currentSegment
     }
 
     // ================= Halaman Zeni =================
@@ -717,6 +775,68 @@ class MainActivity : Activity() {
         }
         blockedRow.addView(btnClearBlocked)
         persCard.addView(blockedRow, matchWrap())
+
+        // Sakelar gaya pil: baris judul + tombol Aktif/Mati.
+        fun persToggleRow(
+            title: String, sub: String, initial: Boolean, onChange: (Boolean) -> Unit
+        ): LinearLayout {
+            val row = hrow {
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, dp(12), 0, 0)
+            }
+            val colT = vcol {}
+            colT.addView(textView(title, 14f, TEXT, bold = true), matchWrap())
+            colT.addView(textView(sub, 12f, TEXT2), matchWrap())
+            row.add(colT, 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            var state = initial
+            val btn = accentPillButton(if (state) "Aktif" else "Mati", 12f).apply {
+                setPadding(dp(14), dp(7), dp(14), dp(7))
+                alpha = if (state) 1f else 0.55f
+            }
+            btn.setOnClickListener {
+                state = !state
+                btn.text = if (state) "Aktif" else "Mati"
+                btn.alpha = if (state) 1f else 0.55f
+                onChange(state)
+            }
+            row.addView(btn)
+            return row
+        }
+        persCard.addView(persToggleRow(
+            "Lewati hening",
+            "Potong jeda senyap di lagu & podcast",
+            PlayerManager.isSkipSilence()
+        ) { on ->
+            PlayerManager.setSkipSilence(on)
+            Toast.makeText(this@MainActivity,
+                if (on) "Lewati hening aktif" else "Lewati hening mati",
+                Toast.LENGTH_SHORT).show()
+        }, matchWrap())
+        persCard.addView(persToggleRow(
+            "Mode performa",
+            "Layar 120Hz — semua gerakan makin licin",
+            getSharedPreferences("zeni_prefs", MODE_PRIVATE)
+                .getBoolean("perf_mode", false)
+        ) { on ->
+            getSharedPreferences("zeni_prefs", MODE_PRIVATE).edit()
+                .putBoolean("perf_mode", on).apply()
+            applyPerfMode()
+            Toast.makeText(this@MainActivity,
+                if (on) "Mode performa aktif" else "Mode performa mati",
+                Toast.LENGTH_SHORT).show()
+        }, matchWrap())
+        persCard.addView(persToggleRow(
+            "Sampul layar-penuh",
+            "Sampul pemutar melebar sampai tepi layar",
+            getSharedPreferences("zeni_prefs", MODE_PRIVATE)
+                .getBoolean("full_cover", false)
+        ) { on ->
+            getSharedPreferences("zeni_prefs", MODE_PRIVATE).edit()
+                .putBoolean("full_cover", on).apply()
+            Toast.makeText(this@MainActivity,
+                "Berlaku saat pemutar dibuka lagi",
+                Toast.LENGTH_SHORT).show()
+        }, matchWrap())
         col.addView(persCard, matchWrap().apply { bottomMargin = dp(12) })
         refreshBlockedInfo()
 
@@ -2675,14 +2795,20 @@ class MainActivity : Activity() {
 
     private fun updateMiniPlayer(st: PlayerManager.UiState) {
         val cur = st.current
-        val wrap = miniPlayer.parent as? View
         val shouldShow = cur != null
         val wasGone = miniPlayer.visibility != View.VISIBLE
-        wrap?.visibility = if (shouldShow) View.VISIBLE else View.GONE
         miniPlayer.visibility = if (shouldShow) View.VISIBLE else View.GONE
-        // Slide up halus saat mini player muncul
-        if (shouldShow && wasGone) with(UiKit) { miniPlayer.slideUpIn() }
+        // Slide up halus saat mini player muncul; sesuaikan ruang konten.
+        if (shouldShow && wasGone) {
+            with(UiKit) { miniPlayer.slideUpIn() }
+            updateContentPadding()
+        }
+        if (!shouldShow && !wasGone) updateContentPadding()
         if (cur == null) return
+        if (miniCoverId != cur.videoId) {
+            miniCoverId = cur.videoId
+            if (::ivMiniCover.isInitialized) ImageLoader.load(cur.thumbnailUrl, ivMiniCover)
+        }
         tvMiniTitle.text = cur.title
         val isBusy = st.loading || st.buffering
         tvMiniChannel.text = when {

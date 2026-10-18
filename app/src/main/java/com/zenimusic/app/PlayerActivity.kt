@@ -170,6 +170,20 @@ class PlayerActivity : Activity() {
         vm = AppViewModel(app)
 
         buildUi()
+        // Mode performa: refresh rate tertinggi (sama seperti MainActivity).
+        try {
+            if (getSharedPreferences("zeni_prefs", MODE_PRIVATE)
+                    .getBoolean("perf_mode", false)) {
+                @Suppress("DEPRECATION")
+                val disp = if (android.os.Build.VERSION.SDK_INT >=
+                    android.os.Build.VERSION_CODES.R) display
+                    else windowManager.defaultDisplay
+                val maxRate = disp?.supportedModes?.maxOfOrNull { it.refreshRate } ?: 0f
+                val lp = window.attributes
+                lp.preferredRefreshRate = maxRate
+                window.attributes = lp
+            }
+        } catch (e: Exception) { /* abaikan */ }
         uiScope.launch {
             PlayerManager.uiState.collect { st ->
                 samplePosition(st)
@@ -340,15 +354,28 @@ class PlayerActivity : Activity() {
         topRow.addView(btnQueue)
         playerUi.addView(topRow, matchWrap())
 
-        // Artwork: rounded 24dp + shadow via outlineProvider + elevation
+        // Artwork: rounded 24dp + shadow via outlineProvider + elevation.
+        // Opsi "sampul layar-penuh" (Personalisasi): melebar sampai tepi layar.
+        val fullCover = try {
+            getSharedPreferences("zeni_prefs", MODE_PRIVATE)
+                .getBoolean("full_cover", false)
+        } catch (e: Exception) { false }
         ivArt = ImageView(this@PlayerActivity).apply {
             scaleType = ImageView.ScaleType.CENTER_CROP
             setBackgroundColor(SURFACE2)
-            roundedCorners(24, 8)
+            if (fullCover) roundedCorners(0, 0) else roundedCorners(24, 8)
         }
-        val artLp = LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, dp(300)).apply {
-            topMargin = dp(20); bottomMargin = dp(24)
+        val artLp = if (fullCover) {
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(372)).apply {
+                leftMargin = -dp(24); rightMargin = -dp(24)
+                topMargin = dp(8); bottomMargin = dp(20)
+            }
+        } else {
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(300)).apply {
+                topMargin = dp(20); bottomMargin = dp(24)
+            }
         }
         playerUi.addView(ivArt, artLp)
         // Geser sampul: kiri = lagu berikutnya, kanan = sebelumnya.
@@ -571,6 +598,27 @@ class PlayerActivity : Activity() {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         }
         setContentView(root)
+        // Gerakan masuk (v3.8.0): sampul memegas membesar, konten memudar naik —
+        // meneruskan rasa "membesar dari mini player" pada transisi aktivitas.
+        try {
+            with(UiKit) {
+                if (::ivArt.isInitialized) {
+                    ivArt.scaleX = 0.92f; ivArt.scaleY = 0.92f
+                    ivArt.animate().scaleX(1f).scaleY(1f)
+                        .setDuration(520).setInterpolator(UiKit.SPRING_SOFT).start()
+                }
+                root.alpha = 0f
+                root.animate().alpha(1f)
+                    .setDuration(380).setInterpolator(UiKit.EASE_APPLE).start()
+            }
+        } catch (e: Exception) { /* animasi gagal tidak fatal */ }
+    }
+
+    /** Tutup dengan transisi mengecil kembali ke arah pil mini player. */
+    override fun finish() {
+        super.finish()
+        @Suppress("DEPRECATION")
+        overridePendingTransition(R.anim.act_close_enter, R.anim.act_close_exit)
     }
 
     /**
@@ -812,6 +860,7 @@ class PlayerActivity : Activity() {
     private fun openLyrics() {
         val track = currentTrack ?: return
         lyricsOverlay.visibility = View.VISIBLE
+        with(UiKit) { lyricsOverlay.sheetUp(40, 400) }
         loadLyricsFor(track)
     }
 
@@ -1449,6 +1498,7 @@ class PlayerActivity : Activity() {
 
     private fun openQueue() {
         queueOverlay.visibility = View.VISIBLE
+        with(UiKit) { queueOverlay.sheetUp(40, 400) }
         refreshQueue()
     }
 

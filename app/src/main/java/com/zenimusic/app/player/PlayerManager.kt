@@ -124,6 +124,28 @@ object PlayerManager {
         loadCrossfadePref()
         loadBlocked()
         loadSpeedPref()
+        loadSkipSilencePref()
+    }
+
+    // ============ Lewati hening (potong jeda senyap — bawaan ExoPlayer) ============
+    @Volatile private var skipSilenceOn = false
+
+    private fun loadSkipSilencePref() {
+        try {
+            skipSilenceOn = appContext.getSharedPreferences("zeni_prefs", Context.MODE_PRIVATE)
+                .getBoolean("skip_silence", false)
+        } catch (e: Exception) { skipSilenceOn = false }
+    }
+
+    fun isSkipSilence(): Boolean = skipSilenceOn
+
+    fun setSkipSilence(on: Boolean) {
+        skipSilenceOn = on
+        try { player?.skipSilenceEnabled = on } catch (e: Exception) { /* abaikan */ }
+        try {
+            appContext.getSharedPreferences("zeni_prefs", Context.MODE_PRIVATE)
+                .edit().putBoolean("skip_silence", on).apply()
+        } catch (e: Exception) { /* abaikan */ }
     }
 
     // ============ Blokir lagu/artis dari radio ============
@@ -232,6 +254,7 @@ object PlayerManager {
         player = p
         svcRestartTries = 0
         try { p.setPlaybackSpeed(_uiState.value.speed) } catch (e: Exception) { /* abaikan */ }
+        try { p.skipSilenceEnabled = skipSilenceOn } catch (e: Exception) { /* abaikan */ }
         // Tempel equalizer ke audio session player
         try {
             com.zenimusic.app.audio.EqualizerHelper.attach(p.audioSessionId)

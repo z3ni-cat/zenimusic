@@ -23,6 +23,12 @@ done
 mkdir -p "$BUILD/classes-app"
 SOURCES=$(find "$PROJ/app/src/main/java" -name "*.kt" | sort)
 
+# R.java aplikasi (hasil aapt2 link) WAJIB ikut dikompilasi bila kode memakai R.*
+# (dulu tidak ada pemakai R.*; sejak v3.8.0 ada R.anim untuk transisi pemutar).
+if [ -f "$BUILD/gen/com/zenimusic/app/R.java" ]; then
+  SOURCES="$SOURCES $BUILD/gen/com/zenimusic/app/R.java"
+fi
+
 # Secrets.kt tidak di-commit (gitignored): generate stub kosong bila belum ada
 # agar fresh clone tetap bisa compile. Nilai asli hanya ada di mesin build.
 if [ ! -f "$PROJ/app/src/main/java/com/zenimusic/app/Secrets.kt" ]; then

@@ -648,16 +648,14 @@ object UiKit {
 }
 
 /**
- * Panel kaca buram ASLI (v3.9.0): menggambar potongan gambar buram dari isi
- * layar yang berada tepat di belakang panel ini (ditangkap dari pohon view
- * oleh pemanggil), lalu dilapisi warna gelap tipis + garis tepi terang —
- * frosted glass seperti Telegram/iOS, tanpa library Compose.
- *
- * Pemanggil memasok bitmap strip bawah layar yang sudah diburamkan lewat
- * [setStrip] beserta geometri tangkapannya; view ini menyelaraskan potongan
- * yang digambar dengan posisi nyatanya di jendela.
+ * Latar kaca buram ASLI (v3.9.1): Drawable yang menggambar potongan gambar
+ * buram dari isi layar tepat di belakang view pemiliknya, dilapisi warna
+ * gelap tipis + garis tepi terang — frosted glass ala Telegram/iOS.
+ * (Versi view terpisah di v3.9.0 meregang setinggi layar karena jebakan
+ * MATCH_PARENT di dalam induk WRAP_CONTENT — drawable ini tidak punya
+ * masalah ukur karena mengikuti bounds view pemiliknya.)
  */
-class GlassStripView(context: android.content.Context) : View(context) {
+class GlassStripDrawable : android.graphics.drawable.Drawable() {
 
     private var strip: android.graphics.Bitmap? = null
     private var stripScale: Float = 0.22f
@@ -665,11 +663,7 @@ class GlassStripView(context: android.content.Context) : View(context) {
     private var rootLocX: Int = 0
     private var rootLocY: Int = 0
 
-    /** Radius sudut (px) untuk klip pil/kartu. */
     var cornerRadiusPx: Float = 0f
-        set(value) { field = value; rebuildPath() }
-
-    /** Warna lapisan di atas blur (gelap tembus pandang). */
     var tintColor: Int = 0x66120E20
 
     private val clipPath = android.graphics.Path()
@@ -682,6 +676,7 @@ class GlassStripView(context: android.content.Context) : View(context) {
     private val strokePaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
         style = android.graphics.Paint.Style.STROKE
         color = 0x30FFFFFF
+        strokeWidth = 1.6f
     }
 
     fun setStrip(
@@ -693,57 +688,53 @@ class GlassStripView(context: android.content.Context) : View(context) {
         stripLocalTop = localTop
         rootLocX = rootX
         rootLocY = rootY
-        invalidate()
+        invalidateSelf()
     }
 
-    private fun rebuildPath() {
+    override fun onBoundsChange(bounds: android.graphics.Rect) {
         clipPath.reset()
-        if (width > 0 && height > 0) {
-            clipPath.addRoundRect(
-                0f, 0f, width.toFloat(), height.toFloat(),
-                cornerRadiusPx, cornerRadiusPx,
-                android.graphics.Path.Direction.CW
-            )
-        }
+        clipPath.addRoundRect(
+            bounds.left.toFloat(), bounds.top.toFloat(),
+            bounds.right.toFloat(), bounds.bottom.toFloat(),
+            cornerRadiusPx, cornerRadiusPx,
+            android.graphics.Path.Direction.CW
+        )
     }
 
-    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
-        super.onSizeChanged(w, h, oldw, oldh)
-        strokePaint.strokeWidth = (h * 0.016f).coerceIn(1f, 2.5f)
-        rebuildPath()
-    }
-
-    override fun onDraw(canvas: android.graphics.Canvas) {
+    override fun draw(canvas: android.graphics.Canvas) {
+        val b = bounds
+        if (b.width() == 0 || b.height() == 0) return
         val bmp = strip
-        if (width == 0 || height == 0) return
-        if (bmp == null || bmp.isRecycled) {
-            // Belum ada tangkapan: tampilkan kaca polos tembus pandang.
+        val view = callback as? View
+        if (bmp == null || bmp.isRecycled || view == null) {
             canvas.save()
             canvas.clipPath(clipPath)
             tintPaint.color = 0xD81E1A2B.toInt()
-            canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), tintPaint)
+            canvas.drawRect(b, tintPaint)
             canvas.restore()
             canvas.drawPath(clipPath, strokePaint)
             return
         }
         val loc = IntArray(2)
-        getLocationInWindow(loc)
+        view.getLocationInWindow(loc)
         canvas.save()
         canvas.clipPath(clipPath)
-        // Selaraskan bitmap strip (koordinat jendela -> lokal view ini).
         canvas.translate(
-            -(loc[0] - rootLocX).toFloat(),
-            -(loc[1] - rootLocY - stripLocalTop).toFloat()
+            b.left - (loc[0] - rootLocX).toFloat(),
+            b.top - (loc[1] - rootLocY - stripLocalTop).toFloat()
         )
         canvas.scale(1f / stripScale, 1f / stripScale)
         canvas.drawBitmap(bmp, 0f, 0f, bmpPaint)
         canvas.restore()
-        // Lapisan gelap + garis tepi.
         canvas.save()
         canvas.clipPath(clipPath)
         tintPaint.color = tintColor
-        canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), tintPaint)
+        canvas.drawRect(b, tintPaint)
         canvas.restore()
         canvas.drawPath(clipPath, strokePaint)
     }
+
+    override fun setAlpha(alpha: Int) {}
+    override fun setColorFilter(colorFilter: android.graphics.ColorFilter?) {}
+    override fun getOpacity(): Int = android.graphics.PixelFormat.TRANSLUCENT
 }

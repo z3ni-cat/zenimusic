@@ -234,8 +234,8 @@ class MainActivity : Activity() {
     /** Bar melayang bawah (kapsul mini player + navigasi pil kaca). */
     private lateinit var floatBar: LinearLayout
     private lateinit var contentPane: FrameLayout
-    private lateinit var glassMini: com.zenimusic.app.ui.GlassStripView
-    private lateinit var glassNav: com.zenimusic.app.ui.GlassStripView
+    private lateinit var glassMiniBg: com.zenimusic.app.ui.GlassStripDrawable
+    private lateinit var glassNavBg: com.zenimusic.app.ui.GlassStripDrawable
     private var glassStripBmp: android.graphics.Bitmap? = null
     private var glassDirty = true
     private var glassLoopOn = false
@@ -450,13 +450,12 @@ class MainActivity : Activity() {
             elevation = dp(10).toFloat()
             visibility = View.GONE
         }
-        glassMini = com.zenimusic.app.ui.GlassStripView(this@MainActivity).apply {
+        glassMiniBg = com.zenimusic.app.ui.GlassStripDrawable().apply {
             cornerRadiusPx = dp(100).toFloat()
             tintColor = 0x5C140F22
         }
-        miniPlayer.addView(glassMini, FrameLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         val miniRow = hrow {
+            background = glassMiniBg
             setPadding(dp(10), dp(8), dp(8), dp(8))
             gravity = Gravity.CENTER_VERTICAL
         }
@@ -500,7 +499,7 @@ class MainActivity : Activity() {
         miniRow.addView(miniSpinner, LinearLayout.LayoutParams(dp(40), dp(40)))
         miniRow.addView(btnMiniNext)
         miniPlayer.addView(miniRow, FrameLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         attachCapsuleGestures(miniRow)
         floatBar.addView(miniPlayer, matchWrap().apply { bottomMargin = dp(8) })
 
@@ -509,18 +508,17 @@ class MainActivity : Activity() {
         val navBar = FrameLayout(this@MainActivity).apply {
             elevation = dp(10).toFloat()
         }
-        glassNav = com.zenimusic.app.ui.GlassStripView(this@MainActivity).apply {
+        glassNavBg = com.zenimusic.app.ui.GlassStripDrawable().apply {
             cornerRadiusPx = dp(100).toFloat()
             tintColor = 0x5C140F22
         }
-        navBar.addView(glassNav, FrameLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         val navRow = hrow {
+            background = glassNavBg
             setPadding(dp(6), dp(6), dp(6), dp(6))
             gravity = Gravity.CENTER_VERTICAL
         }
         navBar.addView(navRow, FrameLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         navButtons = navKinds.mapIndexed { i, kind ->
             iconAction(kind, if (i == 1) ACCENT1 else TEXT2, 46, 11).also { iv ->
                 iv.setOnClickListener { selectSegment(i) }
@@ -637,7 +635,7 @@ class MainActivity : Activity() {
      * bitmap hasil perkecilan hanya ±270×60 piksel.
      */
     private fun refreshGlassStrip() {
-        if (!::floatBar.isInitialized || !::glassMini.isInitialized) return
+        if (!::floatBar.isInitialized || !::glassMiniBg.isInitialized) return
         try {
             val root = floatBar.parent as? View ?: return
             val rw = root.width
@@ -664,9 +662,9 @@ class MainActivity : Activity() {
             root.getLocationInWindow(loc)
             val old = glassStripBmp
             glassStripBmp = blurred
-            glassMini.setStrip(blurred, s, rh - stripH, loc[0], loc[1])
-            if (::glassNav.isInitialized) {
-                glassNav.setStrip(blurred, s, rh - stripH, loc[0], loc[1])
+            glassMiniBg.setStrip(blurred, s, rh - stripH, loc[0], loc[1])
+            if (::glassNavBg.isInitialized) {
+                glassNavBg.setStrip(blurred, s, rh - stripH, loc[0], loc[1])
             }
             if (old != null && old !== blurred && !old.isRecycled) old.recycle()
         } catch (e: Exception) { /* kaca gagal -> panel tampil polos */ }

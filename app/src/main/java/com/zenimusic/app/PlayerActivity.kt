@@ -78,6 +78,8 @@ class PlayerActivity : Activity() {
     private lateinit var tvTitle: TextView
     private lateinit var tvChannel: TextView
     private lateinit var tvChapter: TextView
+    private lateinit var tvQuality: TextView
+    private lateinit var tvSpeed: TextView
     private lateinit var tvPos: TextView
     private lateinit var tvDur: TextView
     private lateinit var seekBar: SeekBar
@@ -175,6 +177,7 @@ class PlayerActivity : Activity() {
                 if (cur != null && cur.videoId != currentTrack?.videoId) {
                     currentTrack = cur
                     tvTitle.text = cur.title
+                    tvTitle.isSelected = true // jalankan marquee judul panjang
                     tvChannel.text = cur.channel
                     ImageLoader.load(cur.thumbnailUrl, ivArt)
                     updateBlurBackground(cur.thumbnailUrl)
@@ -210,6 +213,24 @@ class PlayerActivity : Activity() {
                     tvDur.text = formatDurationMs(dur)
                 }
                 updateChapterLabel(st.positionMs)
+                // Label kualitas audio + chip kecepatan (murah, teks saja).
+                if (::tvQuality.isInitialized) {
+                    val qName = try {
+                        getSharedPreferences("zeni_prefs", MODE_PRIVATE)
+                            .getString("audio_quality", "tinggi")
+                    } catch (e: Exception) { "tinggi" }
+                    val qLabel = when (qName) {
+                        "hemat" -> "Hemat"; "sedang" -> "Sedang"; else -> "Tinggi"
+                    }
+                    tvQuality.text = when {
+                        cur?.localPath != null -> "Tersimpan di HP"
+                        st.audioKbps > 0 -> "Audio $qLabel • ${st.audioKbps} kbps"
+                        else -> "Audio $qLabel"
+                    }
+                    tvSpeed.text = (if (st.speed == st.speed.toInt().toFloat()) {
+                        st.speed.toInt().toString()
+                    } else st.speed.toString()) + "×"
+                }
                 btnDl.alpha = if (cur == null) 0.4f else 1f
                 updateBufferOverlay(st)
                 st.error?.let {
@@ -330,16 +351,65 @@ class PlayerActivity : Activity() {
             topMargin = dp(20); bottomMargin = dp(24)
         }
         playerUi.addView(ivArt, artLp)
+        // Geser sampul: kiri = lagu berikutnya, kanan = sebelumnya.
+        // Ketukan biasa membuka lirik.
+        var artDownX = 0f
+        var artDownY = 0f
+        ivArt.setOnTouchListener { v, ev ->
+            when (ev.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    artDownX = ev.x; artDownY = ev.y; true
+                }
+                MotionEvent.ACTION_UP -> {
+                    val dx = ev.x - artDownX
+                    val dy = ev.y - artDownY
+                    val adx = kotlin.math.abs(dx)
+                    val ady = kotlin.math.abs(dy)
+                    when {
+                        adx > dp(48) && adx > ady * 1.5f -> {
+                            if (dx < 0) PlayerManager.next() else PlayerManager.previous()
+                            val dir = if (dx < 0) -1f else 1f
+                            v.animate().translationX(dir * dp(26)).setDuration(110)
+                                .withEndAction {
+                                    v.animate().translationX(0f).setDuration(190).start()
+                                }.start()
+                        }
+                        adx < dp(14) && ady < dp(14) -> openLyrics()
+                    }
+                    true
+                }
+                MotionEvent.ACTION_CANCEL -> true
+                else -> true
+            }
+        }
 
         tvTitle = textView("", 20f, TEXT, bold = true).apply {
             gravity = Gravity.CENTER
-            maxLines = 2
-            ellipsize = TextUtils.TruncateAt.END
+            // Judul panjang berjalan pelan (marquee) agar terbaca utuh.
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.MARQUEE
+            marqueeRepeatLimit = -1
+            isSelected = true
+            isFocusable = true
         }
         playerUi.addView(tvTitle, matchWrap())
         tvChannel = textView("", 14f, TEXT2).apply { gravity = Gravity.CENTER }
         val chLp = matchWrap().apply { bottomMargin = dp(6) }
         playerUi.addView(tvChannel, chLp)
+        // Ketuk nama artis: buka pencarian artis itu di halaman Cari.
+        tvChannel.isClickable = true
+        tvChannel.isFocusable = true
+        tvChannel.setOnClickListener {
+            val q = currentTrack?.channel?.takeIf { it.isNotBlank() }
+                ?: return@setOnClickListener
+            startActivity(
+                android.content.Intent(this@PlayerActivity, MainActivity::class.java).apply {
+                    flags = android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                        android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP
+                    putExtra(MainActivity.EXTRA_ARTIST, q)
+                }
+            )
+        }
         // Label bab mix: lagu yang sedang jalan di dalam video panjang.
         // Ketuk untuk membuka daftar semua lagu di dalam mix.
         tvChapter = textView("", 13f, ACCENT2, bold = true).apply {
@@ -353,6 +423,26 @@ class PlayerActivity : Activity() {
         tvChapter.setOnClickListener { showChaptersDialog() }
         val chapLp = matchWrap().apply { bottomMargin = dp(10) }
         playerUi.addView(tvChapter, chapLp)
+
+        // Baris label kualitas audio (kiri) + chip kecepatan putar (kanan).
+        val infoRow = hrow { gravity = Gravity.CENTER_VERTICAL }
+        tvQuality = textView("", 11.5f, TEXT2).apply { maxLines = 1 }
+        infoRow.add(tvQuality, 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        tvSpeed = textView("1.0×", 12f, TEXT, bold = true).apply {
+            background = roundedBg(SURFACE2, dp(10).toFloat())
+            setPadding(dp(10), dp(4), dp(10), dp(4))
+            isClickable = true
+            isFocusable = true
+        }
+        tvSpeed.setOnClickListener {
+            val speeds = listOf(0.75f, 1.0f, 1.25f, 1.5f, 1.75f, 2.0f)
+            val cur = PlayerManager.uiState.value.speed
+            val next = speeds.firstOrNull { it > cur + 0.001f } ?: speeds.first()
+            PlayerManager.setSpeed(next)
+        }
+        infoRow.addView(tvSpeed)
+        val infoLp = matchWrap().apply { bottomMargin = dp(8) }
+        playerUi.addView(infoRow, infoLp)
 
         val seekRow = hrow {}
         tvPos = textView("--:--", 12f, TEXT2).apply { gravity = Gravity.CENTER }
@@ -497,15 +587,112 @@ class PlayerActivity : Activity() {
             if (token != bgToken || bmp == null || bmp.isRecycled) return@get
             bgBlurJob = uiScope.launch(Dispatchers.Default) {
                 val blurred = makeBlurBitmap(bmp)
+                val colors = dominantColors(bmp)
                 withContext(Dispatchers.Main) {
                     if (token != bgToken) {
                         if (blurred != null && !blurred.isRecycled) blurred.recycle()
                         return@withContext
                     }
                     if (blurred != null) crossfadeBlur(blurred)
+                    if (colors != null) applyDynamicAccent(colors.first, colors.second)
+                    else resetAccent()
                 }
             }
         }
+    }
+
+    /**
+     * Warna dominan sampul: kecilkan ke 16×16, kelompokkan piksel per rona
+     * (hue), abaikan yang pucat/gelap/terang ekstrem, pilih kelompok paling
+     * berwarna. Hasilnya dipoles ke rentang cerah yang nyaman di mata.
+     */
+    private fun dominantColors(src: Bitmap): Pair<Int, Int>? {
+        return try {
+            val small = Bitmap.createScaledBitmap(src, 16, 16, true)
+            val buckets = HashMap<Int, FloatArray>() // hueBucket -> [count, satSum, rSum, gSum, bSum, weight]
+            val hsv = FloatArray(3)
+            for (x in 0 until 16) for (y in 0 until 16) {
+                val px = small.getPixel(x, y)
+                android.graphics.Color.colorToHSV(px, hsv)
+                val sat = hsv[1]
+                val v = hsv[2]
+                if (sat < 0.25f || v < 0.15f || v > 0.97f) continue
+                val bucket = (hsv[0] / 30f).toInt().coerceIn(0, 11)
+                val w = sat * v
+                val arr = buckets.getOrPut(bucket) { FloatArray(6) }
+                arr[0] += 1f
+                arr[1] += sat
+                arr[2] += android.graphics.Color.red(px)
+                arr[3] += android.graphics.Color.green(px)
+                arr[4] += android.graphics.Color.blue(px)
+                arr[5] += w
+            }
+            if (small !== src) small.recycle()
+            val best = buckets.values.maxByOrNull { it[5] } ?: return null
+            val n = best[0].coerceAtLeast(1f)
+            android.graphics.Color.colorToHSV(
+                android.graphics.Color.rgb(
+                    (best[2] / n).toInt(), (best[3] / n).toInt(), (best[4] / n).toInt()
+                ), hsv
+            )
+            val c1 = android.graphics.Color.HSVToColor(
+                floatArrayOf(hsv[0], hsv[1].coerceIn(0.45f, 0.85f), 0.86f))
+            val c2 = android.graphics.Color.HSVToColor(
+                floatArrayOf(hsv[0], hsv[1].coerceIn(0.45f, 0.9f), 0.62f))
+            c1 to c2
+        } catch (e: Exception) { null }
+    }
+
+    /** Terapkan warna sampul ke tombol putar + garis progres pemutar. */
+    private fun applyDynamicAccent(c1: Int, c2: Int) {
+        try {
+            btnPlay.background = android.graphics.drawable.GradientDrawable().apply {
+                shape = android.graphics.drawable.GradientDrawable.OVAL
+                orientation = android.graphics.drawable.GradientDrawable.Orientation.TL_BR
+                colors = intArrayOf(c1, c2)
+            }
+            val r = dp(4).toFloat()
+            val bgTrack = android.graphics.drawable.GradientDrawable().apply {
+                shape = android.graphics.drawable.GradientDrawable.RECTANGLE
+                setColor(UiKit.SURFACE2)
+                cornerRadius = r
+            }
+            val progress = android.graphics.drawable.GradientDrawable(
+                android.graphics.drawable.GradientDrawable.Orientation.LEFT_RIGHT,
+                intArrayOf(c1, c2)
+            ).apply {
+                shape = android.graphics.drawable.GradientDrawable.RECTANGLE
+                cornerRadius = r
+            }
+            val progressClip = android.graphics.drawable.ClipDrawable(
+                progress, Gravity.LEFT, android.graphics.drawable.ClipDrawable.HORIZONTAL)
+            val layer = android.graphics.drawable.LayerDrawable(arrayOf(bgTrack, progressClip)).apply {
+                setId(0, android.R.id.background)
+                setId(1, android.R.id.progress)
+            }
+            val prog = seekBar.progress
+            val max = seekBar.max
+            seekBar.progressDrawable = layer
+            seekBar.thumb = android.graphics.drawable.GradientDrawable().apply {
+                shape = android.graphics.drawable.GradientDrawable.OVAL
+                setColor(c2)
+                val s = dp(18)
+                setSize(s, s)
+            }
+            if (max > 0) { seekBar.max = max; seekBar.progress = prog }
+        } catch (e: Exception) { /* biarkan tampilan lama */ }
+    }
+
+    /** Kembalikan aksen pemutar ke warna tema bila sampul tak memberi warna. */
+    private fun resetAccent() {
+        try {
+            styleSeekBar(seekBar)
+            btnPlay.background = android.graphics.drawable.GradientDrawable().apply {
+                shape = android.graphics.drawable.GradientDrawable.OVAL
+                orientation = android.graphics.drawable.GradientDrawable.Orientation.TL_BR
+                colors = intArrayOf(UiKit.ACCENT1, UiKit.ACCENT2)
+            }
+        } catch (e: Exception) { /* abaikan */ }
     }
 
     /**
@@ -666,7 +853,7 @@ class PlayerActivity : Activity() {
             for (line in lines) {
                 with(UiKit) {
                     val row = vcol {}
-                    val tvLine = textView(line.text, 19f, TEXT2).apply {
+                    val tvLine = textView(line.text, 20f, TEXT2).apply {
                         setPadding(0, dp(10), 0, dp(2))
                         setLineSpacing(dp(6).toFloat(), 1f)
                         isClickable = true
@@ -1019,25 +1206,6 @@ class PlayerActivity : Activity() {
         scrollAnim = null
     }
 
-    /** Gulir daftar lirik meluncur lembut ke [targetY] (±650ms, melambat di akhir). */
-    private fun glideScrollTo(targetY: Int) {
-        val from = lyricsScroll.scrollY
-        if (from == targetY) return
-        scrollAnim?.cancel()
-        scrollAnim = ValueAnimator.ofInt(from, targetY).apply {
-            duration = 650
-            interpolator = android.view.animation.DecelerateInterpolator()
-            addUpdateListener { a ->
-                if (SystemClock.uptimeMillis() < userScrollUntil) {
-                    cancel()
-                    return@addUpdateListener
-                }
-                lyricsScroll.scrollTo(0, a.animatedValue as Int)
-            }
-            start()
-        }
-    }
-
     /**
      * Redup + kecilkan baris lirik bertahap mengikuti jaraknya dari baris aktif
      * (sentuhan khas Apple Music). Transformasi view — tanpa layout ulang.
@@ -1148,25 +1316,22 @@ class PlayerActivity : Activity() {
      * Transisi highlight lirik ala Apple Music: baris aktif membesar (19→22sp)
      * dan mencerah dengan animasi fade ±350ms; baris lama mengecil kembali.
      */
+    /**
+     * Transisi baris aktif TANPA mengubah ukuran teks (v3.7.1): animasi textSize
+     * lama mengubah tinggi baris di tengah scroll — posisi baris lain bergeser,
+     * target scroll basi, hasilnya patah-patah dan layar "mental". Sekarang yang
+     * berubah hanya warna + ketebalan huruf; penekanan visual aktif/nonaktif
+     * ditangani applyLyricDimming lewat skala transformasi (tanpa layout ulang).
+     */
     private fun animateLyricLine(tv: TextView, activate: Boolean) {
-        val fromSize = if (activate) 19f else 22f
-        val toSize = if (activate) 22f else 19f
         val fromColor = if (activate) TEXT2 else TEXT
         val toColor = if (activate) TEXT else TEXT2
         tv.setTypeface(tv.typeface, if (activate) Typeface.BOLD else Typeface.NORMAL)
-        val sizeAnim = ValueAnimator.ofFloat(fromSize, toSize).apply {
-            duration = 350
-            addUpdateListener {
-                tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, it.animatedValue as Float)
-            }
-        }
         val colorAnim = ValueAnimator.ofArgb(fromColor, toColor).apply {
             duration = 350
             addUpdateListener { tv.setTextColor(it.animatedValue as Int) }
         }
-        lyricAnimators.add(sizeAnim)
         lyricAnimators.add(colorAnim)
-        sizeAnim.start()
         colorAnim.start()
     }
 
@@ -1180,25 +1345,42 @@ class PlayerActivity : Activity() {
         }
         var idx = lyricLines.indexOfLast { it.timeMs <= pos }
         if (idx < 0) idx = 0
-        if (idx == lyricIndex) return
-        // Batalkan animasi yang masih berjalan, lalu transisikan dengan halus.
-        lyricAnimators.forEach { it.cancel() }
-        lyricAnimators.clear()
-        // redupkan yang lama
-        if (lyricIndex in lyricViews.indices) {
-            animateLyricLine(lyricViews[lyricIndex], activate = false)
-        }
-        lyricIndex = idx
-        val v = lyricViews.getOrNull(idx) ?: return
-        animateLyricLine(v, activate = true)
-        applyLyricDimming(idx)
-        // scroll agar baris aktif di tengah layar (jeda bila user sedang scroll manual)
-        if (SystemClock.uptimeMillis() > userScrollUntil) {
-            lyricsScroll.post {
-                val y = v.top - lyricsScroll.height / 2 + v.height / 2
-                glideScrollTo(y.coerceAtLeast(0))
+        if (idx != lyricIndex) {
+            // Batalkan animasi yang masih berjalan, lalu transisikan dengan halus.
+            lyricAnimators.forEach { it.cancel() }
+            lyricAnimators.clear()
+            // redupkan yang lama
+            if (lyricIndex in lyricViews.indices) {
+                animateLyricLine(lyricViews[lyricIndex], activate = false)
             }
+            lyricIndex = idx
+            val v = lyricViews.getOrNull(idx) ?: return
+            animateLyricLine(v, activate = true)
+            applyLyricDimming(idx)
         }
+        chaseLyricCenter(fromTap)
+    }
+
+    /**
+     * Pengejaran scroll per-frame (v3.7.1): setiap frame, posisi scroll digeser
+     * sebagian menuju target "baris aktif tepat di tengah layar". Berbeda dari
+     * glide satu-tembakan 650ms yang targetnya cepat basi — pengejaran ini
+     * mengikuti terus, jadi layar mengalir halus mengikuti lirik tanpa mental.
+     * Faktor lebih besar setelah ketukan (lompatan jauh) agar cepat sampai.
+     */
+    private fun chaseLyricCenter(fast: Boolean) {
+        if (!::lyricsScroll.isInitialized) return
+        if (SystemClock.uptimeMillis() < userScrollUntil) return
+        val v = lyricViews.getOrNull(lyricIndex) ?: return
+        if (v.height == 0 || lyricsScroll.height == 0) return
+        val target = (v.top - lyricsScroll.height / 2 + v.height / 2).coerceAtLeast(0)
+        val cur = lyricsScroll.scrollY
+        val diff = target - cur
+        if (diff == 0) return
+        val factor = if (fast) 0.35f else 0.16f
+        var step = (diff * factor).toInt()
+        if (step == 0) step = if (diff > 0) 1 else -1
+        lyricsScroll.scrollTo(0, cur + step)
     }
 
     override fun onDestroy() {
@@ -1366,8 +1548,17 @@ class PlayerActivity : Activity() {
      * Seret baris antrean lewat pegangannya: baris melayang mengikuti jari,
      * saat dilepas urutan putar diperbarui lewat PlayerManager.moveInQueue.
      */
+    /**
+     * Seret baris antrean memakai BAYANGAN MELAYANG (snapshot bitmap baris yang
+     * digambar di ImageView terpisah pada overlay). Baris asli hanya disembunyikan
+     * (INVISIBLE) dan TIDAK pernah ditransformasi/di-elevasi — teknik lama
+     * (translationY + bringToFront + elevation pada baris asli) menyebabkan crash
+     * NPE di ViewGroup.dispatchDraw pada v3.7.0.
+     */
     private fun attachQueueDrag(handle: View, row: View, index: Int) {
         var downRawY = 0f
+        var floatView: ImageView? = null
+        var floatStartY = 0f
         handle.setOnTouchListener { _, ev ->
             when (ev.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
@@ -1375,27 +1566,49 @@ class PlayerActivity : Activity() {
                     if (::queueScroll.isInitialized) {
                         queueScroll.requestDisallowInterceptTouchEvent(true)
                     }
-                    row.alpha = 0.92f
-                    row.elevation = 10f
-                    row.bringToFront()
+                    try {
+                        if (row.width > 0 && row.height > 0 && ::queueOverlay.isInitialized) {
+                            val bmp = android.graphics.Bitmap.createBitmap(
+                                row.width, row.height,
+                                android.graphics.Bitmap.Config.ARGB_8888)
+                            row.draw(android.graphics.Canvas(bmp))
+                            val rowLoc = IntArray(2); row.getLocationInWindow(rowLoc)
+                            val ovLoc = IntArray(2); queueOverlay.getLocationInWindow(ovLoc)
+                            val fv = ImageView(this@PlayerActivity).apply {
+                                setImageBitmap(bmp)
+                                alpha = 0.95f
+                                elevation = 12f
+                            }
+                            queueOverlay.addView(fv, FrameLayout.LayoutParams(row.width, row.height))
+                            fv.x = (rowLoc[0] - ovLoc[0]).toFloat()
+                            fv.y = (rowLoc[1] - ovLoc[1]).toFloat()
+                            floatStartY = fv.y
+                            floatView = fv
+                            row.visibility = View.INVISIBLE
+                        }
+                    } catch (e: Exception) { /* gagal snapshot: seret dibatalkan aman */ }
                     true
                 }
                 MotionEvent.ACTION_MOVE -> {
-                    row.translationY = ev.rawY - downRawY
+                    floatView?.let { it.y = floatStartY + (ev.rawY - downRawY) }
                     true
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    val fv = floatView
+                    floatView = null
                     val st = PlayerManager.uiState.value
                     val h = row.height.coerceAtLeast(1)
-                    val steps = Math.round(row.translationY / h.toFloat())
+                    val dy = if (fv != null) fv.y - floatStartY else 0f
+                    val steps = Math.round(dy / h.toFloat())
                     val target = (index + steps).coerceIn(st.queueIndex + 1, st.queue.size - 1)
-                    row.translationY = 0f
-                    row.alpha = 1f
-                    row.elevation = 0f
+                    if (fv != null) (fv.parent as? ViewGroup)?.removeView(fv)
+                    row.visibility = View.VISIBLE
                     if (::queueScroll.isInitialized) {
                         queueScroll.requestDisallowInterceptTouchEvent(false)
                     }
-                    if (target != index) PlayerManager.moveInQueue(index, target)
+                    if (ev.actionMasked == MotionEvent.ACTION_UP && target != index) {
+                        PlayerManager.moveInQueue(index, target)
+                    }
                     refreshQueue()
                     true
                 }

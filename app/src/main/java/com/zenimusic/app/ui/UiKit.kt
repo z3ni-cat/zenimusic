@@ -25,9 +25,20 @@ object UiKit {
     const val BG = 0xFF1A1626.toInt()        // background: soft charcoal-purple (bukan hitam pekat)
     const val SURFACE = 0xFF242130.toInt()   // card / surface
     const val SURFACE2 = 0xFF2E2940.toInt()  // tombol / input
-    const val ACCENT1 = 0xFFA78BFA.toInt()   // muted violet (gradient start)
-    const val ACCENT2 = 0xFF8E7BD8.toInt()   // violet sedikit lebih dalam (gradient end)
-    const val ACCENT = ACCENT1               // kompat: tint teks/ikon aksen
+    // Aksen bisa diganti pengguna (Personalisasi) — dimuat dari prefs di awal
+    // proses oleh ZeniMusicApp, sebelum UI mana pun dibangun.
+    var ACCENT1 = 0xFFA78BFA.toInt()   // muted violet (gradient start)
+    var ACCENT2 = 0xFF8E7BD8.toInt()   // violet sedikit lebih dalam (gradient end)
+    val ACCENT: Int get() = ACCENT1    // kompat: tint teks/ikon aksen
+
+    /** Pasangan warna aksen pilihan pengguna: nama -> (ACCENT1, ACCENT2). */
+    val ACCENT_PRESETS: List<Triple<String, Int, Int>> = listOf(
+        Triple("Ungu", 0xFFA78BFA.toInt(), 0xFF8E7BD8.toInt()),
+        Triple("Biru", 0xFF7AB8FA.toInt(), 0xFF5B8DEF.toInt()),
+        Triple("Hijau", 0xFF7BD88E.toInt(), 0xFF4CAF6D.toInt()),
+        Triple("Merah Muda", 0xFFFAA7C5.toInt(), 0xFFD87BA7.toInt()),
+        Triple("Oranye", 0xFFFABB7A.toInt(), 0xFFEF945B.toInt())
+    )
     const val TEXT = 0xFFFFFFFF.toInt()
     const val TEXT2 = 0xFFA8A3B8.toInt()
     const val ERROR = 0xFFFF6B6B.toInt()

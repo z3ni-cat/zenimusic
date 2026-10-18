@@ -43,7 +43,11 @@ object PlayerManager {
         val repeatOne: Boolean = false,
         val loading: Boolean = false,
         val buffering: Boolean = false,
-        val error: String? = null
+        val error: String? = null,
+        /** Bitrate stream yang sedang diputar (kbps) — label kualitas di pemutar. */
+        val audioKbps: Int = 0,
+        /** Kecepatan putar (untuk podcast): 0.75–2.0. */
+        val speed: Float = 1f
     )
 
     private lateinit var appContext: Context
@@ -118,6 +122,75 @@ object PlayerManager {
         appContext = context.applicationContext
         repo = repository
         loadCrossfadePref()
+        loadBlocked()
+        loadSpeedPref()
+    }
+
+    // ============ Blokir lagu/artis dari radio ============
+    @Volatile private var blockedIds: Set<String> = emptySet()
+    @Volatile private var blockedArtists: Set<String> = emptySet()
+
+    private fun loadBlocked() {
+        try {
+            val p = appContext.getSharedPreferences("zeni_prefs", Context.MODE_PRIVATE)
+            blockedIds = p.getStringSet("blocked_ids", emptySet())?.toSet() ?: emptySet()
+            blockedArtists = p.getStringSet("blocked_artists", emptySet())?.toSet() ?: emptySet()
+        } catch (e: Exception) { /* abaikan */ }
+    }
+
+    private fun saveBlocked() {
+        try {
+            appContext.getSharedPreferences("zeni_prefs", Context.MODE_PRIVATE).edit()
+                .putStringSet("blocked_ids", blockedIds)
+                .putStringSet("blocked_artists", blockedArtists)
+                .apply()
+        } catch (e: Exception) { /* abaikan */ }
+    }
+
+    fun blockTrack(videoId: String) { blockedIds = blockedIds + videoId; saveBlocked() }
+    fun blockArtist(channel: String) {
+        blockedArtists = blockedArtists + channel.trim().lowercase(); saveBlocked()
+    }
+    fun blockedCounts(): Pair<Int, Int> = blockedIds.size to blockedArtists.size
+    fun clearBlocked() { blockedIds = emptySet(); blockedArtists = emptySet(); saveBlocked() }
+
+    private fun isBlocked(t: Track): Boolean =
+        t.videoId in blockedIds || t.channel.trim().lowercase() in blockedArtists
+
+    // ============ Putar berikutnya / tambah antrean ============
+    /** Sisipkan tepat setelah lagu yang sedang diputar. */
+    fun playNext(track: Track) {
+        val st = _uiState.value
+        if (st.current == null || st.queue.isEmpty()) { playTrack(track, listOf(track)); return }
+        val q = st.queue.toMutableList()
+        q.add((st.queueIndex + 1).coerceIn(0, q.size), track)
+        update { copy(queue = q) }
+    }
+
+    /** Tambahkan ke ujung antrean. */
+    fun addToQueue(track: Track) {
+        val st = _uiState.value
+        if (st.current == null || st.queue.isEmpty()) { playTrack(track, listOf(track)); return }
+        update { copy(queue = st.queue + track) }
+    }
+
+    // ============ Kecepatan putar (podcast) ============
+    private fun loadSpeedPref() {
+        try {
+            val s = appContext.getSharedPreferences("zeni_prefs", Context.MODE_PRIVATE)
+                .getFloat("play_speed", 1f)
+            update { copy(speed = s) }
+        } catch (e: Exception) { /* abaikan */ }
+    }
+
+    fun setSpeed(s: Float) {
+        val v = s.coerceIn(0.5f, 2.0f)
+        update { copy(speed = v) }
+        try { player?.setPlaybackSpeed(v) } catch (e: Exception) { /* abaikan */ }
+        try {
+            appContext.getSharedPreferences("zeni_prefs", Context.MODE_PRIVATE)
+                .edit().putFloat("play_speed", v).apply()
+        } catch (e: Exception) { /* abaikan */ }
     }
 
     // ============ Sleep timer ============
@@ -158,6 +231,7 @@ object PlayerManager {
     fun attachPlayer(p: ExoPlayer) {
         player = p
         svcRestartTries = 0
+        try { p.setPlaybackSpeed(_uiState.value.speed) } catch (e: Exception) { /* abaikan */ }
         // Tempel equalizer ke audio session player
         try {
             com.zenimusic.app.audio.EqualizerHelper.attach(p.audioSessionId)
@@ -466,9 +540,11 @@ object PlayerManager {
     private fun selectRadioBatch(
         candidates: List<Track>, count: Int, anchor: Track
     ): List<Track> {
-        if (candidates.isEmpty()) return emptyList()
+        // Lagu/artis yang diblokir pengguna tidak pernah masuk radio.
+        val pool = candidates.filter { !isBlocked(it) }
+        if (pool.isEmpty()) return emptyList()
         val anchorArtist = anchor.channel.trim().lowercase()
-        val shuffled = candidates.shuffled()
+        val shuffled = pool.shuffled()
         val picked = mutableListOf<Track>()
         var anchorCount = 0
         fun isAnchor(t: Track) =
@@ -770,6 +846,10 @@ object PlayerManager {
                 }
             }
             val finalUri = uri
+            if (finalUri != null) {
+                val kbps = if (!track.localPath.isNullOrEmpty()) 0 else repo.lastBitrateKbps
+                if (kbps > 0) update { copy(audioKbps = kbps) }
+            }
             if (finalUri == null) {
                 PlaybackLog.add("ERROR", "Gagal resolve URL: ${lastError?.message}")
                 update { copy(loading = false, error = lastError?.message ?: "Gagal memutar lagu") }

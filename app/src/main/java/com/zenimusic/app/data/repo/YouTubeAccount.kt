@@ -297,6 +297,57 @@ class YouTubeAccount(
         return out
     }
 
+    /**
+     * Umpan beranda YouTube Music milik akun (FEmusic_home) — rekomendasi yang
+     * dipersonalisasi dari riwayat pencarian & tontonan pengguna di YouTube.
+     * Untuk seksi "Berdasarkan Pencarianmu" di Home. Maks 24 lagu, tanpa duplikat.
+     */
+    suspend fun homeFeedTracks(): List<Track> {
+        val resp = browse("FEmusic_home", null)
+        val out = mutableListOf<Track>()
+        val seen = mutableSetOf<String>()
+        walk(resp) { obj ->
+            if (out.size >= 24) return@walk
+            obj.optJSONObject("musicResponsiveListItemRenderer")?.let { r ->
+                val videoId = r.optJSONObject("playlistItemData")?.optString("videoId")
+                    ?.takeIf { it.isNotEmpty() }
+                    ?: findWatchVideoId(r)
+                if (videoId != null && seen.add(videoId)) {
+                    val title = flexText(r, 0)
+                    if (title.isNotEmpty()) {
+                        out.add(
+                            Track(
+                                videoId = videoId,
+                                title = title,
+                                channel = flexText(r, 1).ifEmpty { "YouTube Music" },
+                                thumbnailUrl = thumbOf(r.optJSONObject("thumbnail")),
+                                durationSec = 0L
+                            )
+                        )
+                    }
+                }
+                return@walk
+            }
+            obj.optJSONObject("musicTwoRowItemRenderer")?.let { r ->
+                val videoId = findWatchVideoId(r) ?: return@walk
+                if (!seen.add(videoId)) return@walk
+                val title = runsText(r.optJSONObject("title"))
+                if (title.isEmpty()) return@walk
+                out.add(
+                    Track(
+                        videoId = videoId,
+                        title = title,
+                        channel = runsText(r.optJSONObject("subtitle"))
+                            .ifEmpty { "YouTube Music" },
+                        thumbnailUrl = thumbOf(r),
+                        durationSec = 0L
+                    )
+                )
+            }
+        }
+        return out
+    }
+
     private fun findWatchVideoId(renderer: JSONObject): String? {
         var found: String? = null
         walk(renderer) { obj ->

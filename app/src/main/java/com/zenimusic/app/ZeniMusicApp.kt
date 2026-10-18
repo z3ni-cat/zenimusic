@@ -63,6 +63,16 @@ class ZeniMusicApp : Application() {
         // Init dibungkus: kalau gagal, simpan error-nya dan lanjut (degraded),
         // jangan biarkan crash-loop. MainActivity akan menampilkan layar diagnostik.
         try {
+            // Warna aksen pilihan pengguna — diterapkan sebelum UI dibangun.
+            try {
+                val prefs0 = getSharedPreferences("zeni_prefs", MODE_PRIVATE)
+                val name = prefs0.getString("accent_name", "Ungu") ?: "Ungu"
+                com.zenimusic.app.ui.UiKit.ACCENT_PRESETS.firstOrNull { it.first == name }?.let {
+                    com.zenimusic.app.ui.UiKit.ACCENT1 = it.second
+                    com.zenimusic.app.ui.UiKit.ACCENT2 = it.third
+                }
+            } catch (e: Exception) { /* abaikan */ }
+
             val http = OkHttpClient.Builder()
                 .connectTimeout(20, TimeUnit.SECONDS)
                 .readTimeout(30, TimeUnit.SECONDS)
@@ -73,6 +83,15 @@ class ZeniMusicApp : Application() {
 
             db = ZeniDb(this)
             repository = MusicRepository(db, http, filesDir)
+            // Kualitas audio dari pengaturan (dibaca langsung dari prefs tiap memutar).
+            repository.audioQualityProvider = {
+                try {
+                    getSharedPreferences("zeni_prefs", MODE_PRIVATE)
+                        .getString("audio_quality", "tinggi") ?: "tinggi"
+                } catch (e: Exception) { "tinggi" }
+            }
+            // Cache lirik offline di folder files aplikasi.
+            com.zenimusic.app.data.repo.LyricsRepository.cacheDir = File(filesDir, "lyrics-cache")
             account = YouTubeAccount(this, http)
 
             PlayerManager.init(this, repository)

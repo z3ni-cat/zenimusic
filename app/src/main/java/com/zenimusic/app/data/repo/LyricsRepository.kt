@@ -19,6 +19,31 @@ object LyricsRepository {
     private val http = OkHttpClient()
     private val lrcLine = Regex("""\[(\d+):(\d+)[.:](\d+)\]\s*(.*)""")
 
+    /** Folder cache lirik di HP (diisi ZeniMusicApp) — lirik tersimpan dibuka seketika. */
+    @Volatile var cacheDir: java.io.File? = null
+
+    private fun cacheFile(artist: String, title: String, durationSec: Long): java.io.File? {
+        val dir = cacheDir ?: return null
+        val key = "$artist|$title|$durationSec".lowercase()
+        val hash = java.security.MessageDigest.getInstance("MD5")
+            .digest(key.toByteArray()).joinToString("") { "%02x".format(it) }
+        return java.io.File(dir, "$hash.txt")
+    }
+
+    private fun readCache(f: java.io.File): List<LyricLine> = try {
+        if (!f.isFile) emptyList() else f.readLines().mapNotNull { line ->
+            val tab = line.indexOf('\t')
+            if (tab <= 0) null else LyricLine(line.substring(0, tab).toLong(), line.substring(tab + 1))
+        }
+    } catch (e: Exception) { emptyList() }
+
+    private fun writeCache(f: java.io.File, lines: List<LyricLine>) {
+        try {
+            f.parentFile?.mkdirs()
+            f.writeText(lines.joinToString("\n") { "${it.timeMs}\t${it.text}" })
+        } catch (e: Exception) { /* cache gagal tidak fatal */ }
+    }
+
     /** Ambil lirik sinkron; kosong bila tidak ditemukan. */
     suspend fun getLyrics(artist: String, title: String, durationSec: Long): List<LyricLine> =
         withContext(Dispatchers.IO) {
@@ -26,11 +51,21 @@ object LyricsRepository {
             val cleanTitle = cleanTitle(title)
             if (cleanArtist.isEmpty() || cleanTitle.isEmpty()) return@withContext emptyList()
 
+            // 0. Cache di HP dulu — instan & hemat kuota
+            val cf = cacheFile(cleanArtist, cleanTitle, durationSec)
+            if (cf != null) {
+                val cached = readCache(cf)
+                if (cached.isNotEmpty()) return@withContext cached
+            }
+
             // 1. Coba endpoint /get (paling akurat, pakai durasi)
             val q1 = "artist_name=${enc(cleanArtist)}&track_name=${enc(cleanTitle)}" +
                 (if (durationSec > 0) "&duration=$durationSec" else "")
             fetch("https://lrclib.net/api/get?$q1")?.let { parse(it) }
-                ?.takeIf { it.isNotEmpty() }?.let { return@withContext it }
+                ?.takeIf { it.isNotEmpty() }?.let {
+                    if (cf != null) writeCache(cf, it)
+                    return@withContext it
+                }
 
             // 2. Fallback: /search
             val q2 = "q=${enc("$cleanArtist $cleanTitle")}"
@@ -40,7 +75,10 @@ object LyricsRepository {
                     for (i in 0 until arr.length()) {
                         val obj = arr.getJSONObject(i)
                         val lines = parse(obj.optString("syncedLyrics"))
-                        if (lines.isNotEmpty()) return@withContext lines
+                        if (lines.isNotEmpty()) {
+                            if (cf != null) writeCache(cf, lines)
+                            return@withContext lines
+                        }
                     }
                 } catch (_: Exception) { }
             }

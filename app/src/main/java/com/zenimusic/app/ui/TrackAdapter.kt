@@ -45,6 +45,8 @@ class TrackAdapter(
     var dragMode: Boolean = false
     /** Sentuhan pada pegangan seret diteruskan ke pemilik daftar (posisi, baris, event). */
     var onDragHandleTouch: ((Int, View, android.view.MotionEvent) -> Boolean)? = null
+    /** Tekan lama baris: menu lagu (putar berikutnya, antrean, blokir, …). */
+    var onLongPress: ((Track) -> Unit)? = null
 
     fun submit(list: List<Track>) {
         // Tandai untuk animasi stagger hanya jika isi list benar-benar berganti
@@ -182,6 +184,10 @@ class TrackAdapter(
 
         // Update click listener karena view di-recycle.
         (root.getChildAt(0) as View).setOnClickListener { onPlay(t) }
+        (root.getChildAt(0) as View).setOnLongClickListener {
+            val cb = onLongPress
+            if (cb != null) { cb(t); true } else false
+        }
 
         // Animasi stagger: kartu muncul satu per satu (hanya untuk list baru, max 8 pertama)
         if (stagger && position < 8) {

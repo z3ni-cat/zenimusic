@@ -88,12 +88,30 @@ class MusicRepository(
         }
 
     /** Resolve the best audio-only stream URL for a YouTube video id. */
+    /** Pilihan kualitas dari pengaturan: "hemat" | "sedang" | "tinggi". */
+    var audioQualityProvider: () -> String = { "tinggi" }
+
+    /** Bitrate (kbps) stream yang terakhir dipilih — untuk label di pemutar. */
+    @Volatile var lastBitrateKbps: Int = 0
+        private set
+
     suspend fun resolveAudioUrl(videoId: String): String = withContext(Dispatchers.IO) {
         val info = StreamInfo.getInfo(service, "https://www.youtube.com/watch?v=$videoId")
-        val best: AudioStream = info.audioStreams
-            .filter { !it.url.isNullOrEmpty() }
-            .maxByOrNull { it.averageBitrate }
-            ?: throw IllegalStateException("Tidak ada audio stream untuk video ini")
+        val streams = info.audioStreams.filter { !it.url.isNullOrEmpty() }
+        if (streams.isEmpty()) throw IllegalStateException("Tidak ada audio stream untuk video ini")
+        fun kbpsOf(s: AudioStream): Int {
+            val raw = s.averageBitrate
+            return if (raw > 5000) raw / 1000 else raw
+        }
+        val best: AudioStream = when (audioQualityProvider()) {
+            // Hemat: bitrate terkecil (irit kuota, lebih lancar di jaringan lemot)
+            "hemat" -> streams.minByOrNull { kbpsOf(it) }!!
+            // Sedang: paling dekat ke 128 kbps
+            "sedang" -> streams.minByOrNull { kotlin.math.abs(kbpsOf(it) - 128) }!!
+            // Tinggi: bitrate terbesar
+            else -> streams.maxByOrNull { kbpsOf(it) }!!
+        }
+        lastBitrateKbps = kbpsOf(best)
         best.url ?: throw IllegalStateException("URL audio kosong")
     }
 

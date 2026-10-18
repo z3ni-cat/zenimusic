@@ -156,6 +156,11 @@ class MainActivity : Activity() {
     private lateinit var qpRow: LinearLayout
     private var qpJob: Job? = null
 
+    // ---- Berdasarkan Pencarianmu (akun YouTube) ----
+    private lateinit var acctWrap: LinearLayout
+    private lateinit var acctRow: LinearLayout
+    private var acctJob: Job? = null
+
     // ---- Discovery (Home) ----
     private lateinit var discoveryWrap: LinearLayout
 
@@ -182,6 +187,9 @@ class MainActivity : Activity() {
     // Keadaan seret baris playlist (drag reorder)
     private var dragStartPos = -1
     private var dragDownRawY = 0f
+    /** Bayangan melayang saat menyeret baris playlist (teknik anti-crash v3.7.1). */
+    private var playlistFloatView: ImageView? = null
+    private var playlistFloatStartY = 0f
     private var openPlaylistName: String? = null
     private var playlists: List<PlaylistEntity> = emptyList()
     private var favTracks: List<Track> = emptyList()
@@ -197,6 +205,18 @@ class MainActivity : Activity() {
     private var accountJob: Job? = null
     private lateinit var btnDeletePlaylist: ImageView
     private lateinit var tvAccountState: TextView
+    private lateinit var tvBlockedInfo: TextView
+
+    /** Segarkan teks jumlah blokir di kartu Personalisasi. */
+    private fun refreshBlockedInfo() {
+        if (!::tvBlockedInfo.isInitialized) return
+        val (songs, artists) = PlayerManager.blockedCounts()
+        tvBlockedInfo.text = when {
+            songs == 0 && artists == 0 ->
+                "Belum ada — tekan lama lagu untuk memblokir dari radio"
+            else -> "$songs lagu • $artists artis diblokir dari radio"
+        }
+    }
     private lateinit var btnAccount: Button
     private lateinit var lvLibrary: ListView
     private lateinit var tvLibEmpty: TextView
@@ -220,6 +240,50 @@ class MainActivity : Activity() {
         /** Saluran WhatsApp resmi ZeniMusic untuk info update (diberikan Khalid 2026-10-18). */
         const val WHATSAPP_CHANNEL = "https://whatsapp.com/channel/0029Vb6RMRYEVccJrpFL6O13"
         const val REQ_LOGIN = 41001
+        /** Extra intent: buka tab Cari dengan kata kunci artis (dari pemutar). */
+        const val EXTRA_ARTIST = "extra_artist_search"
+    }
+
+    /** Menu lagu (tekan lama baris): antrean, playlist, dan blokir radio. */
+    private fun showTrackMenu(t: Track) = with(UiKit) {
+        val items = arrayOf(
+            "Putar berikutnya",
+            "Tambah ke antrean",
+            "Tambah ke playlist…",
+            "Jangan putar lagu ini lagi",
+            "Blokir artis: ${t.channel}"
+        )
+        AlertDialog.Builder(this@MainActivity)
+            .setTitle(t.title)
+            .setItems(items) { _, which ->
+                when (which) {
+                    0 -> {
+                        PlayerManager.playNext(t)
+                        Toast.makeText(this@MainActivity,
+                            "Akan diputar berikutnya", Toast.LENGTH_SHORT).show()
+                    }
+                    1 -> {
+                        PlayerManager.addToQueue(t)
+                        Toast.makeText(this@MainActivity,
+                            "Ditambahkan ke antrean", Toast.LENGTH_SHORT).show()
+                    }
+                    2 -> showAddToPlaylistDialog(t)
+                    3 -> {
+                        PlayerManager.blockTrack(t.videoId)
+                        Toast.makeText(this@MainActivity,
+                            "Lagu ini tidak akan muncul di radio lagi",
+                            Toast.LENGTH_SHORT).show()
+                    }
+                    4 -> {
+                        PlayerManager.blockArtist(t.channel)
+                        Toast.makeText(this@MainActivity,
+                            "Artis ${t.channel} diblokir dari radio",
+                            Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
+            .show()
+            .styleAsCard()
     }
 
     /** Tombol akun: belum masuk → buka LoginActivity; sudah masuk → tanya keluar. */
@@ -278,8 +342,24 @@ class MainActivity : Activity() {
         buildUi()
         collectFlows()
         ensureNotifPermission()
+        handleArtistIntent(intent)
         // Cek update versi diam-diam (sekali per sesi buka aplikasi)
         checkForUpdate(auto = true)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleArtistIntent(intent)
+    }
+
+    /** Dari pemutar: nama artis diketuk → buka tab Cari dengan nama artis itu. */
+    private fun handleArtistIntent(intent: Intent?) {
+        val q = intent?.getStringExtra(EXTRA_ARTIST)?.takeIf { it.isNotBlank() } ?: return
+        intent.removeExtra(EXTRA_ARTIST)
+        selectSegment(2) // tab Cari
+        etSearch.setText(q)
+        doSearch()
     }
 
     // ================= UI =================
@@ -511,6 +591,42 @@ class MainActivity : Activity() {
         cfRow.addView(cfSpinner,
             LinearLayout.LayoutParams(dp(110), ViewGroup.LayoutParams.WRAP_CONTENT))
         setCard.addView(cfRow, matchWrap())
+
+        // Baris Kualitas Audio: Hemat (irit kuota) / Sedang / Tinggi.
+        val qRow = hrow {
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dp(12), 0, 0)
+        }
+        qRow.addView(iconAction(ZeniIcons.Kind.EQ, ACCENT1, 40, 8))
+        val qCol = vcol { setPadding(dp(12), 0, dp(8), 0) }
+        qCol.addView(textView("Kualitas Audio", 14f, TEXT, bold = true), matchWrap())
+        qCol.addView(textView("Hemat = irit kuota & lebih lancar", 12f, TEXT2), matchWrap())
+        qRow.add(qCol, 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        val qSpinner = Spinner(this@MainActivity).apply {
+            val opts = listOf("Hemat", "Sedang", "Tinggi")
+            adapter = ArrayAdapter(this@MainActivity,
+                android.R.layout.simple_spinner_dropdown_item, opts)
+            val cur = getSharedPreferences("zeni_prefs", MODE_PRIVATE)
+                .getString("audio_quality", "tinggi")
+            setSelection(when (cur) { "hemat" -> 0; "sedang" -> 1; else -> 2 })
+        }
+        var qInit = true
+        qSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) {
+                if (qInit) { qInit = false; return }
+                val value = when (pos) { 0 -> "hemat"; 1 -> "sedang"; else -> "tinggi" }
+                getSharedPreferences("zeni_prefs", MODE_PRIVATE).edit()
+                    .putString("audio_quality", value).apply()
+                Toast.makeText(this@MainActivity,
+                    "Kualitas audio: ${listOf("Hemat", "Sedang", "Tinggi")[pos]} " +
+                        "(berlaku mulai lagu berikutnya)",
+                    Toast.LENGTH_SHORT).show()
+            }
+            override fun onNothingSelected(p: AdapterView<*>?) {}
+        }
+        qRow.addView(qSpinner,
+            LinearLayout.LayoutParams(dp(110), ViewGroup.LayoutParams.WRAP_CONTENT))
+        setCard.addView(qRow, matchWrap())
         col.addView(setCard, matchWrap().apply { bottomMargin = dp(12) })
 
         // Akun YouTube (login ala YMusic)
@@ -529,6 +645,80 @@ class MainActivity : Activity() {
         btnAccount.setOnClickListener { onAccountButton() }
         accCard.addView(btnAccount, matchWrap())
         col.addView(accCard, matchWrap().apply { bottomMargin = dp(12) })
+
+        // Personalisasi: warna aksen + kelola blokir radio
+        val persCard = vcol {
+            background = cardBg()
+            setPadding(dp(16), dp(14), dp(16), dp(14))
+        }
+        persCard.addView(textView("Personalisasi", 15f, TEXT, bold = true).apply {
+            setPadding(0, 0, 0, dp(4))
+        }, matchWrap())
+        persCard.addView(textView("Warna aksen aplikasi", 12f, TEXT2), matchWrap())
+        val dotRow = hrow { setPadding(0, dp(8), 0, dp(4)) }
+        val curAccent = getSharedPreferences("zeni_prefs", MODE_PRIVATE)
+            .getString("accent_name", "Ungu") ?: "Ungu"
+        for (preset in UiKit.ACCENT_PRESETS) {
+            val selected = preset.first == curAccent
+            val dot = ImageView(this@MainActivity).apply {
+                background = android.graphics.drawable.GradientDrawable().apply {
+                    shape = android.graphics.drawable.GradientDrawable.OVAL
+                    setColor(preset.second)
+                    if (selected) {
+                        setStroke(dp(2), WHITE)
+                    }
+                }
+                isClickable = true
+                isFocusable = true
+                contentDescription = preset.first
+            }
+            dot.setOnClickListener {
+                getSharedPreferences("zeni_prefs", MODE_PRIVATE).edit()
+                    .putString("accent_name", preset.first).apply()
+                UiKit.ACCENT1 = preset.second
+                UiKit.ACCENT2 = preset.third
+                refreshNav()
+                Toast.makeText(this@MainActivity,
+                    "Warna aksen: ${preset.first}. Buka lagi aplikasinya agar " +
+                        "berlaku di semua layar.",
+                    Toast.LENGTH_LONG).show()
+            }
+            dotRow.addView(dot, LinearLayout.LayoutParams(dp(34), dp(34)).apply {
+                rightMargin = dp(10)
+            })
+        }
+        persCard.addView(dotRow, matchWrap())
+        val blockedRow = hrow {
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dp(10), 0, 0)
+        }
+        val blockedCol = vcol {}
+        blockedCol.addView(textView("Lagu & artis diblokir", 14f, TEXT, bold = true),
+            matchWrap())
+        tvBlockedInfo = textView("", 12f, TEXT2)
+        blockedCol.addView(tvBlockedInfo, matchWrap())
+        blockedRow.add(blockedCol, 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        val btnClearBlocked = accentPillButton("Hapus", 12f).apply {
+            setPadding(dp(14), dp(7), dp(14), dp(7))
+        }
+        btnClearBlocked.setOnClickListener {
+            AlertDialog.Builder(this@MainActivity)
+                .setTitle("Hapus semua blokir?")
+                .setMessage("Lagu dan artis yang diblokir akan bisa muncul lagi di radio.")
+                .setPositiveButton("Hapus") { _, _ ->
+                    PlayerManager.clearBlocked()
+                    refreshBlockedInfo()
+                    Toast.makeText(this@MainActivity, "Semua blokir dihapus",
+                        Toast.LENGTH_SHORT).show()
+                }
+                .setNegativeButton("Batal", null)
+                .show()
+                .styleAsCard()
+        }
+        blockedRow.addView(btnClearBlocked)
+        persCard.addView(blockedRow, matchWrap())
+        col.addView(persCard, matchWrap().apply { bottomMargin = dp(12) })
+        refreshBlockedInfo()
 
         // Menu WhatsApp
         val waRow = hrow {
@@ -806,6 +996,58 @@ class MainActivity : Activity() {
 
     // ================= Quick Picks =================
 
+    /** Muat seksi "Berdasarkan Pencarianmu" (hanya bila login YouTube). */
+    private fun loadAccountHome() {
+        acctJob?.cancel()
+        if (!vm.accountLoggedIn.value) {
+            if (::acctWrap.isInitialized) acctWrap.visibility = View.GONE
+            return
+        }
+        acctJob = uiScope.launch {
+            try {
+                val tracks = vm.accountHomeTracks()
+                if (!::acctWrap.isInitialized) return@launch
+                if (tracks.isEmpty()) {
+                    acctWrap.visibility = View.GONE
+                    return@launch
+                }
+                acctRow.removeAllViews()
+                for (t in tracks) acctRow.addView(accountPickCard(t))
+                acctWrap.visibility = View.VISIBLE
+            } catch (_: Exception) {
+                if (::acctWrap.isInitialized) acctWrap.visibility = View.GONE
+            }
+        }
+    }
+
+    private fun accountPickCard(t: Track): LinearLayout = with(UiKit) {
+        val card = vcol {
+            background = cardBg()
+            setPadding(dp(8), dp(8), dp(8), dp(8))
+            pressedFeedback()
+            isClickable = true
+            isFocusable = true
+        }
+        val iv = ImageView(this@MainActivity).apply {
+            scaleType = ImageView.ScaleType.CENTER_CROP
+            roundedCorners(10)
+        }
+        ImageLoader.load(t.thumbnailUrl, iv)
+        card.addView(iv, LinearLayout.LayoutParams(dp(104), dp(104)))
+        card.addView(textView(t.title, 12f, TEXT, bold = true).apply {
+            maxLines = 2
+            ellipsize = TextUtils.TruncateAt.END
+            setPadding(0, dp(6), 0, 0)
+        }, LinearLayout.LayoutParams(dp(104), ViewGroup.LayoutParams.WRAP_CONTENT))
+        card.addView(textView(t.channel, 11f, TEXT2).apply {
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.END
+        }, LinearLayout.LayoutParams(dp(104), ViewGroup.LayoutParams.WRAP_CONTENT))
+        // Ketuk: putar lagu ini, radio meneruskan seperti YMusic.
+        card.setOnClickListener { vm.play(t, listOf(t)) }
+        card
+    }
+
     private fun loadQuickPicks() {
         qpJob?.cancel()
         qpJob = uiScope.launch {
@@ -880,6 +1122,28 @@ class MainActivity : Activity() {
         qpWrap.addView(qpScroll, matchWrap())
         discoveryWrap.addView(qpWrap, matchWrap())
         loadQuickPicks()
+
+        // ---- Berdasarkan Pencarianmu: rekomendasi beranda akun YouTube ----
+        // Hanya tampil bila sudah login & datanya ada (tersinkron dari akun).
+        acctWrap = vcol {
+            setPadding(dp(12), dp(4), dp(12), dp(4))
+            visibility = View.GONE
+        }
+        acctWrap.addView(textView("Berdasarkan Pencarianmu", 15f, TEXT, bold = true).apply {
+            setPadding(dp(4), dp(4), dp(4), 0)
+        }, matchWrap())
+        acctWrap.addView(textView("Dari akun YouTube-mu", 12f, TEXT2).apply {
+            setPadding(dp(4), 0, dp(4), dp(8))
+        }, matchWrap())
+        val acctScroll = HorizontalScrollView(this@MainActivity).apply {
+            isHorizontalScrollBarEnabled = false
+        }
+        acctRow = hrow {}
+        acctScroll.addView(acctRow, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        acctWrap.addView(acctScroll, matchWrap())
+        discoveryWrap.addView(acctWrap, matchWrap())
+        loadAccountHome()
 
         // ---- Zeni Wrapped: statistik dengerin ala Spotify Wrapped ----
         val wrappedWrap = vcol { setPadding(dp(12), dp(4), dp(12), dp(4)) }
@@ -1077,7 +1341,7 @@ class MainActivity : Activity() {
             onFav = { t -> vm.toggleFavorite(t) },
             onDownloadHandler = { t -> vm.download(t) },
             onAddToPlaylist = { t -> showAddToPlaylistDialog(t) }
-        )
+        ).apply { onLongPress = { t -> showTrackMenu(t) } }
         // Footer pemuatan halaman berikutnya (muncul saat load-more berjalan)
         val footerWrap = LinearLayout(this@MainActivity).apply {
             gravity = Gravity.CENTER
@@ -1604,7 +1868,7 @@ class MainActivity : Activity() {
             ctx = this@MainActivity,
             onPlay = { t -> vm.play(t, libTrackAdapter.items, radioMode = false) },
             onDownloadHandler = { t -> vm.download(t) }
-        )
+        ).apply { onLongPress = { t -> showTrackMenu(t) } }
         lvLibrary.adapter = playlistAdapter
         tvLibEmpty = emptyView("")
         pane.addView(tvLibEmpty, matchWrap())
@@ -1692,7 +1956,7 @@ class MainActivity : Activity() {
             onFav = { t -> vm.toggleFavorite(t) },
             onDownloadHandler = { t -> vm.download(t) },
             onAddToPlaylist = { t -> showAddToPlaylistDialog(t) }
-        )
+        ).apply { onLongPress = { t -> showTrackMenu(t) } }
         lvPodcast.adapter = podcastAdapter
         podcastEmpty = emptyView("Belum ada episode")
         podcastDetail.addView(podcastEmpty, matchWrap())
@@ -1967,6 +2231,7 @@ class MainActivity : Activity() {
         }
         currentSegment = safeIdx
         refreshNav()
+        if (safeIdx == 0) refreshBlockedInfo()
         panes.forEachIndexed { i, pane ->
             if (i == safeIdx) {
                 val wasGone = pane.visibility != View.VISIBLE
@@ -2128,30 +2393,59 @@ class MainActivity : Activity() {
      * Seret baris pada detail playlist: baris melayang mengikuti jari; saat
      * dilepas, urutan baru diterapkan ke adapter dan disimpan ke database.
      */
+    /**
+     * Seret baris playlist memakai BAYANGAN MELAYANG (snapshot bitmap baris di
+     * ImageView terpisah pada root konten). Baris asli hanya INVISIBLE dan tidak
+     * pernah ditransformasi — teknik lama (translationY + elevation pada baris
+     * ListView asli) menyebabkan crash NPE dispatchDraw di v3.7.0.
+     */
     private fun onPlaylistRowDrag(position: Int, row: View, ev: android.view.MotionEvent): Boolean {
         when (ev.actionMasked) {
             android.view.MotionEvent.ACTION_DOWN -> {
                 dragStartPos = position
                 dragDownRawY = ev.rawY
                 lvLibrary.requestDisallowInterceptTouchEvent(true)
-                row.alpha = 0.92f
-                row.elevation = 10f
+                try {
+                    if (row.width > 0 && row.height > 0) {
+                        val bmp = android.graphics.Bitmap.createBitmap(
+                            row.width, row.height,
+                            android.graphics.Bitmap.Config.ARGB_8888)
+                        row.draw(android.graphics.Canvas(bmp))
+                        val root = findViewById<ViewGroup>(android.R.id.content)
+                        val rowLoc = IntArray(2); row.getLocationInWindow(rowLoc)
+                        val rootLoc = IntArray(2); root.getLocationInWindow(rootLoc)
+                        val fv = ImageView(this).apply {
+                            setImageBitmap(bmp)
+                            alpha = 0.95f
+                            elevation = 12f
+                        }
+                        root.addView(fv, ViewGroup.LayoutParams(row.width, row.height))
+                        fv.x = (rowLoc[0] - rootLoc[0]).toFloat()
+                        fv.y = (rowLoc[1] - rootLoc[1]).toFloat()
+                        playlistFloatStartY = fv.y
+                        playlistFloatView = fv
+                        row.visibility = View.INVISIBLE
+                    }
+                } catch (e: Exception) { /* gagal snapshot: seret dibatalkan aman */ }
             }
             android.view.MotionEvent.ACTION_MOVE -> {
-                row.translationY = ev.rawY - dragDownRawY
+                playlistFloatView?.let { it.y = playlistFloatStartY + (ev.rawY - dragDownRawY) }
             }
             android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL -> {
+                val fv = playlistFloatView
+                playlistFloatView = null
                 val items = libTrackAdapter.items.toMutableList()
                 val h = row.height.coerceAtLeast(1)
-                val steps = Math.round(row.translationY / h.toFloat())
+                val dy = if (fv != null) fv.y - playlistFloatStartY else 0f
+                val steps = Math.round(dy / h.toFloat())
                 val from = dragStartPos
                 val to = (from + steps).coerceIn(0, (items.size - 1).coerceAtLeast(0))
-                row.translationY = 0f
-                row.alpha = 1f
-                row.elevation = 0f
+                if (fv != null) (fv.parent as? ViewGroup)?.removeView(fv)
+                row.visibility = View.VISIBLE
                 lvLibrary.requestDisallowInterceptTouchEvent(false)
                 dragStartPos = -1
-                if (from in items.indices && to != from) {
+                if (ev.actionMasked == android.view.MotionEvent.ACTION_UP &&
+                    from in items.indices && to != from) {
                     val item = items.removeAt(from)
                     items.add(to, item)
                     playlistSongs = items
@@ -2370,6 +2664,7 @@ class MainActivity : Activity() {
         uiScope.launch {
             vm.accountLoggedIn.collect { loggedIn ->
                 refreshAccountCard()
+                loadAccountHome()
                 if (loggedIn) loadAccountPlaylists() else {
                     accountPlaylists = emptyList()
                     if (openAccountPlaylistId != null) closePlaylistDetail() else renderLibrary()

@@ -140,6 +140,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     suspend fun accountTracks(playlistId: String): List<Track> =
         zeni.account.playlistTracks(playlistId)
 
+    /** Rekomendasi beranda akun YouTube — seksi "Berdasarkan Pencarianmu". */
+    suspend fun accountHomeTracks(): List<Track> = zeni.account.homeFeedTracks()
+
     /** Statistik Wrapped (tahun/bulan ini) dari history lokal. */
     suspend fun wrapped(year: Boolean): WrappedStats = Wrapped(dao).getStats(year)
 

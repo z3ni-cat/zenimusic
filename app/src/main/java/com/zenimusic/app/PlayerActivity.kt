@@ -125,6 +125,7 @@ class PlayerActivity : Activity() {
     // Overlay antrian
     private lateinit var queueOverlay: FrameLayout
     private lateinit var queueBox: LinearLayout
+    private lateinit var queueScroll: ScrollView
     private lateinit var tvQueueCount: TextView
 
     // Panel karaoke: 3 baris (sebelum/aktif/berikut) dengan sweep animasi
@@ -1251,6 +1252,7 @@ class PlayerActivity : Activity() {
         col.addView(topRow, matchWrap())
 
         val scroll = ScrollView(this@PlayerActivity).apply { isFillViewport = true }
+        queueScroll = scroll
         queueBox = vcol {
             setPadding(0, dp(12), 0, dp(24))
         }
@@ -1348,8 +1350,58 @@ class PlayerActivity : Activity() {
             row.addView(btnRm, LinearLayout.LayoutParams(dp(36), dp(36)).apply {
                 gravity = Gravity.CENTER_VERTICAL
             })
+            // Pegangan seret: hanya lagu SETELAH yang sedang diputar (urutan putar berikutnya)
+            if (index > PlayerManager.uiState.value.queueIndex) {
+                val handle = iconAction(ZeniIcons.Kind.DRAG, TEXT2, 36, 9)
+                attachQueueDrag(handle, row, index)
+                row.addView(handle, LinearLayout.LayoutParams(dp(36), dp(36)).apply {
+                    gravity = Gravity.CENTER_VERTICAL
+                })
+            }
         }
         row
+    }
+
+    /**
+     * Seret baris antrean lewat pegangannya: baris melayang mengikuti jari,
+     * saat dilepas urutan putar diperbarui lewat PlayerManager.moveInQueue.
+     */
+    private fun attachQueueDrag(handle: View, row: View, index: Int) {
+        var downRawY = 0f
+        handle.setOnTouchListener { _, ev ->
+            when (ev.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    downRawY = ev.rawY
+                    if (::queueScroll.isInitialized) {
+                        queueScroll.requestDisallowInterceptTouchEvent(true)
+                    }
+                    row.alpha = 0.92f
+                    row.elevation = 10f
+                    row.bringToFront()
+                    true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    row.translationY = ev.rawY - downRawY
+                    true
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    val st = PlayerManager.uiState.value
+                    val h = row.height.coerceAtLeast(1)
+                    val steps = Math.round(row.translationY / h.toFloat())
+                    val target = (index + steps).coerceIn(st.queueIndex + 1, st.queue.size - 1)
+                    row.translationY = 0f
+                    row.alpha = 1f
+                    row.elevation = 0f
+                    if (::queueScroll.isInitialized) {
+                        queueScroll.requestDisallowInterceptTouchEvent(false)
+                    }
+                    if (target != index) PlayerManager.moveInQueue(index, target)
+                    refreshQueue()
+                    true
+                }
+                else -> false
+            }
+        }
     }
 
     /**

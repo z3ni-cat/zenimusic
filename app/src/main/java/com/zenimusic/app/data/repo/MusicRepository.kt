@@ -394,20 +394,20 @@ class MusicRepository(
      * Mencegah video non-musik (dokumenter, gaming, vlog) masuk antrean radio,
      * sekaligus memutus rantai: sekali video non-musik masuk, related-nya ikut non-musik.
      */
+    /**
+     * Kandidat lagu radio: HANYA rekomendasi YouTube (related) dari lagu acuan —
+     * ala YMusic. Dulu dicampur hasil pencarian nama artis (satu halaman penuh)
+     * sehingga antrean didominasi artis yang sama; sekarang pemilihan & batas
+     * artis diatur PlayerManager.selectRadioBatch.
+     */
     suspend fun radioPool(track: Track): List<Track> = withContext(Dispatchers.IO) {
-        val artistPool = try {
-            val ch = track.channel.trim()
-            if (ch.isEmpty() || ch.equals("Unknown", ignoreCase = true)) emptyList()
-            else search(ch)
-        } catch (_: Exception) { emptyList<Track>() }
         val relatedPool = try {
             relatedTracks(track.videoId)
         } catch (_: Exception) { emptyList<Track>() }
             .filter { it.durationSec in 30..720 }
-        (artistPool + relatedPool)
+        relatedPool
             .distinctBy { it.videoId }
             .filter { it.videoId != track.videoId }
-            .shuffled()
     }
 }
 

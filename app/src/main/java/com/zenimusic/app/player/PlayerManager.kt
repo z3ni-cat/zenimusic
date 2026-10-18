@@ -446,6 +446,64 @@ object PlayerManager {
         resolveAndPlay(s.queue[index])
     }
 
+    /** Geser lagu di antrean (hanya bagian setelah lagu aktif yang boleh digeser). */
+    fun moveInQueue(from: Int, to: Int) {
+        val s = _uiState.value
+        if (from !in s.queue.indices || to !in s.queue.indices) return
+        if (from <= s.queueIndex || to <= s.queueIndex) return
+        val q = s.queue.toMutableList()
+        val item = q.removeAt(from)
+        q.add(to, item)
+        update { copy(queue = q) }
+    }
+
+    /**
+     * Pilih batch lagu radio dari kandidat rekomendasi YouTube: acak, tetapi
+     * artis yang sama dengan lagu acuan dibatasi maks 2 per batch, dan artis
+     * yang sama tidak boleh muncul dua kali berurutan (dilonggarkan bertahap
+     * bila stok kandidat kurang).
+     */
+    private fun selectRadioBatch(
+        candidates: List<Track>, count: Int, anchor: Track
+    ): List<Track> {
+        if (candidates.isEmpty()) return emptyList()
+        val anchorArtist = anchor.channel.trim().lowercase()
+        val shuffled = candidates.shuffled()
+        val picked = mutableListOf<Track>()
+        var anchorCount = 0
+        fun isAnchor(t: Track) =
+            anchorArtist.isNotEmpty() && t.channel.trim().lowercase() == anchorArtist
+        // Lolos 1: patuh batas artis acuan + tanpa artis berurutan.
+        var lastArtist = anchorArtist
+        for (c in shuffled) {
+            if (picked.size >= count) break
+            val a = c.channel.trim().lowercase()
+            if (isAnchor(c) && anchorCount >= 2) continue
+            if (a.isNotEmpty() && a == lastArtist) continue
+            picked.add(c)
+            if (isAnchor(c)) anchorCount++
+            if (a.isNotEmpty()) lastArtist = a
+        }
+        // Lolos 2: longgarkan aturan berurutan.
+        if (picked.size < count) {
+            for (c in shuffled) {
+                if (picked.size >= count) break
+                if (c in picked) continue
+                if (isAnchor(c) && anchorCount >= 2) continue
+                picked.add(c)
+                if (isAnchor(c)) anchorCount++
+            }
+        }
+        // Lolos 3: ambil apa adanya daripada antrean kosong.
+        if (picked.size < count) {
+            for (c in shuffled) {
+                if (picked.size >= count) break
+                if (c !in picked) picked.add(c)
+            }
+        }
+        return picked
+    }
+
     /** Hapus lagu dari antrian (tidak bisa hapus yang sedang diputar). */
     fun removeAt(index: Int) {
         val s = _uiState.value
@@ -522,10 +580,10 @@ object PlayerManager {
             try {
                 val playedNow = _uiState.value.playedIds
                 val existing = _uiState.value.queue.map { it.videoId }.toSet()
-                val related = withContext(Dispatchers.IO) { repo.radioPool(forTrack) }
-                    .filter { r -> r.videoId !in playedNow && r.videoId !in existing }
-                    .shuffled()
-                    .take(10)
+                val related = selectRadioBatch(
+                    withContext(Dispatchers.IO) { repo.radioPool(forTrack) }
+                        .filter { r -> r.videoId !in playedNow && r.videoId !in existing },
+                    10, forTrack)
                 if (related.isEmpty()) return@launch
                 update { copy(queue = _uiState.value.queue + related) }
             } catch (_: Exception) { }
@@ -560,10 +618,10 @@ object PlayerManager {
             try {
                 val playedNow = _uiState.value.playedIds + current.videoId
                 val existing = _uiState.value.queue.map { it.videoId }.toSet()
-                val related = withContext(Dispatchers.IO) { repo.radioPool(current) }
-                    .filter { r -> r.videoId !in playedNow && r.videoId !in existing }
-                    .shuffled()
-                    .take(10)
+                val related = selectRadioBatch(
+                    withContext(Dispatchers.IO) { repo.radioPool(current) }
+                        .filter { r -> r.videoId !in playedNow && r.videoId !in existing },
+                    10, current)
                 if (related.isNotEmpty()) {
                     val base = _uiState.value.queue
                     val newQueue = base + related
@@ -769,9 +827,9 @@ object PlayerManager {
                 val s = _uiState.value
                 val unplayed = s.queue.count { it.videoId !in s.playedIds }
                 if (unplayed >= 12) return@launch
-                val related = repo.radioPool(track)
-                    .filter { r -> r.videoId !in s.playedIds }
-                    .take(15)
+                val related = selectRadioBatch(
+                    repo.radioPool(track).filter { r -> r.videoId !in s.playedIds },
+                    15, track)
                 if (related.isEmpty()) return@launch
                 // Hindari duplikat videoId yang sudah ada di antrian (tapi izinkan
                 // judul mirip — yang penting videoId-nya beda agar ada variasi).

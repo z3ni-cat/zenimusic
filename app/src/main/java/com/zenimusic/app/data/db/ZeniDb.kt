@@ -212,6 +212,23 @@ class ZeniDb(context: Context) :
         ping()
     }
 
+    /** Tulis ulang urutan lagu playlist (hasil seret pengguna) ke kolom position. */
+    suspend fun setPlaylistOrder(pid: Long, orderedIds: List<String>) = withContext(Dispatchers.IO) {
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            orderedIds.forEachIndexed { i, vid ->
+                val cv = ContentValues().apply { put("position", i) }
+                db.update("playlist_songs", cv,
+                    "playlistId = ? AND videoId = ?", arrayOf(pid.toString(), vid))
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+        ping()
+    }
+
     suspend fun removeFromPlaylist(pid: Long, vid: String) = withContext(Dispatchers.IO) {
         writableDatabase.delete(
             "playlist_songs", "playlistId = ? AND videoId = ?",

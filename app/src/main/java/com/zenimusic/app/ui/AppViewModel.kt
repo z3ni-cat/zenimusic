@@ -114,6 +114,32 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** Generate Samples (~20 lagu trending/viral untuk swipe discovery). */
     suspend fun samples(): List<Track> = Samples.generate(repo)
 
+    /** Generate Flow: campuran personal dari favorit + riwayat dengar. */
+    suspend fun flow(): List<Track> = com.zenimusic.app.data.repo.Flow.generate(repo)
+
+    // ---- Akun YouTube (login ala YMusic) ----
+
+    private val _accountLoggedIn = MutableStateFlow(
+        try { zeni.account.isLoggedIn } catch (_: Exception) { false }
+    )
+    val accountLoggedIn: StateFlow<Boolean> = _accountLoggedIn
+
+    fun refreshAccountState() {
+        _accountLoggedIn.value = try { zeni.account.isLoggedIn } catch (_: Exception) { false }
+    }
+
+    fun logoutAccount() {
+        try { zeni.account.logout() } catch (_: Exception) { }
+        refreshAccountState()
+        _toast.value = "Sudah keluar dari akun YouTube"
+    }
+
+    suspend fun accountPlaylists(): List<com.zenimusic.app.data.repo.AccountPlaylist> =
+        zeni.account.libraryPlaylists()
+
+    suspend fun accountTracks(playlistId: String): List<Track> =
+        zeni.account.playlistTracks(playlistId)
+
     /** Statistik Wrapped (tahun/bulan ini) dari history lokal. */
     suspend fun wrapped(year: Boolean): WrappedStats = Wrapped(dao).getStats(year)
 
@@ -180,17 +206,35 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Simpan urutan lagu playlist setelah diseret pengguna. */
+    fun reorderPlaylist(playlistId: Long, tracks: List<Track>) {
+        viewModelScope.launch(Dispatchers.IO) {
+            dao.setPlaylistOrder(playlistId, tracks.map { it.videoId })
+        }
+    }
+
+    /** Persentase unduhan yang sedang berjalan, per videoId (0-100). */
+    private val _downloadProgress = MutableStateFlow<Map<String, Int>>(emptyMap())
+    val downloadProgress: StateFlow<Map<String, Int>> = _downloadProgress
+
     fun download(track: Track) {
         viewModelScope.launch {
             if (_downloadingIds.value.contains(track.videoId)) return@launch
             _downloadingIds.value = _downloadingIds.value + track.videoId
+            _downloadProgress.value = _downloadProgress.value + (track.videoId to 0)
             try {
-                repo.download(track)
+                repo.download(track) { pct ->
+                    if (_downloadProgress.value[track.videoId] != pct) {
+                        _downloadProgress.value =
+                            _downloadProgress.value + (track.videoId to pct)
+                    }
+                }
                 _toast.value = "Download selesai: ${track.title}"
             } catch (e: Exception) {
                 _toast.value = "Download gagal: ${e.message}"
             }
             _downloadingIds.value = _downloadingIds.value - track.videoId
+            _downloadProgress.value = _downloadProgress.value - track.videoId
         }
     }
 

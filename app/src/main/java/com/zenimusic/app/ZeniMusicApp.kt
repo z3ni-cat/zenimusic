@@ -3,6 +3,7 @@ package com.zenimusic.app
 import android.app.Application
 import com.zenimusic.app.data.db.ZeniDb
 import com.zenimusic.app.data.repo.MusicRepository
+import com.zenimusic.app.data.repo.YouTubeAccount
 import com.zenimusic.app.net.OkHttpDownloader
 import com.zenimusic.app.player.PlayerManager
 import okhttp3.OkHttpClient
@@ -21,6 +22,9 @@ class ZeniMusicApp : Application() {
         private set
 
     lateinit var repository: MusicRepository
+        private set
+
+    lateinit var account: YouTubeAccount
         private set
 
     /** Set when init fails; MainActivity shows a diagnostic screen instead of crashing. */
@@ -69,6 +73,7 @@ class ZeniMusicApp : Application() {
 
             db = ZeniDb(this)
             repository = MusicRepository(db, http, filesDir)
+            account = YouTubeAccount(this, http)
 
             PlayerManager.init(this, repository)
             // Equalizer: siapkan prefs (attach ke session dilakukan di attachPlayer)

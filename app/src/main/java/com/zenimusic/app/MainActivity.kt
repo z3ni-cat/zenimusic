@@ -98,7 +98,11 @@ class MainActivity : Activity() {
     private lateinit var vm: AppViewModel
 
     // ---- Segmented nav ----
-    private lateinit var segmentButtons: List<Button>
+    private lateinit var navButtons: List<ImageView>
+    private val navKinds = listOf(
+        ZeniIcons.Kind.CAT, ZeniIcons.Kind.HOME, ZeniIcons.Kind.SEARCH,
+        ZeniIcons.Kind.MIC, ZeniIcons.Kind.PLAYLIST, ZeniIcons.Kind.LOG
+    )
     private var currentSegment = 1
     private lateinit var zeniPane: ScrollView
     private lateinit var homePane: LinearLayout
@@ -159,6 +163,8 @@ class MainActivity : Activity() {
     private lateinit var daylistCard: LinearLayout
     private lateinit var tvDaylistTitle: TextView
     private lateinit var tvDaylistSub: TextView
+    private lateinit var tvFlowSub: TextView
+    private var flowJob: Job? = null
     private var daylistJob: Job? = null
     private var daylistCacheSlot: DaylistSlot? = null
     private var daylistCacheTracks: List<Track> = emptyList()
@@ -173,6 +179,9 @@ class MainActivity : Activity() {
     // ---- Library pane ----
     private var libTab = 0 // 0=playlist 1=favorit 2=riwayat 3=unduhan
     private var openPlaylistId: Long? = null
+    // Keadaan seret baris playlist (drag reorder)
+    private var dragStartPos = -1
+    private var dragDownRawY = 0f
     private var openPlaylistName: String? = null
     private var playlists: List<PlaylistEntity> = emptyList()
     private var favTracks: List<Track> = emptyList()
@@ -180,6 +189,15 @@ class MainActivity : Activity() {
     private var dlTracks: List<Track> = emptyList()
     private var playlistSongs: List<Track> = emptyList()
     private var playlistSongsJob: Job? = null
+    // Akun YouTube (login): playlist akun + detail playlist akun yang terbuka
+    private var accountPlaylists: List<com.zenimusic.app.data.repo.AccountPlaylist> = emptyList()
+    private var openAccountPlaylistId: String? = null
+    private var openAccountPlaylistTitle: String? = null
+    private var accountSongs: List<Track> = emptyList()
+    private var accountJob: Job? = null
+    private lateinit var btnDeletePlaylist: ImageView
+    private lateinit var tvAccountState: TextView
+    private lateinit var btnAccount: Button
     private lateinit var lvLibrary: ListView
     private lateinit var tvLibEmpty: TextView
     private lateinit var playlistAdapter: PlaylistAdapter
@@ -199,9 +217,50 @@ class MainActivity : Activity() {
     private lateinit var miniSpinner: android.widget.ProgressBar
 
     companion object {
-        /** Nomor WhatsApp resmi ZeniMusic untuk info update (diberikan Khalid 2026-10-10). */
-        const val WHATSAPP_NUMBER = "62895634936155"
-        const val WHATSAPP_TEXT = "Halo%2C%20saya%20pengguna%20ZeniMusic"
+        /** Saluran WhatsApp resmi ZeniMusic untuk info update (diberikan Khalid 2026-10-18). */
+        const val WHATSAPP_CHANNEL = "https://whatsapp.com/channel/0029Vb6RMRYEVccJrpFL6O13"
+        const val REQ_LOGIN = 41001
+    }
+
+    /** Tombol akun: belum masuk → buka LoginActivity; sudah masuk → tanya keluar. */
+    private fun onAccountButton() {
+        if (vm.accountLoggedIn.value) {
+            val dlg = AlertDialog.Builder(this)
+                .setTitle("Keluar dari akun YouTube?")
+                .setMessage("Playlist akun tidak akan tampil lagi sampai kamu masuk kembali.")
+                .setPositiveButton("Keluar") { _, _ -> vm.logoutAccount() }
+                .setNegativeButton("Batal", null)
+                .show()
+            with(UiKit) {
+                dlg.styleAsCard()
+                dlg.getButton(AlertDialog.BUTTON_POSITIVE)?.setTextColor(ERROR)
+                dlg.getButton(AlertDialog.BUTTON_NEGATIVE)?.setTextColor(TEXT2)
+            }
+        } else {
+            @Suppress("DEPRECATION")
+            startActivityForResult(Intent(this, LoginActivity::class.java), REQ_LOGIN)
+        }
+    }
+
+    private fun refreshAccountCard() {
+        if (!::tvAccountState.isInitialized) return
+        val loggedIn = vm.accountLoggedIn.value
+        tvAccountState.text = if (loggedIn) {
+            "Sudah masuk — playlist akun & lagu yang disukai ada di tab Playlist"
+        } else {
+            "Masuk untuk melihat playlist YouTube-mu & lagu yang kamu sukai"
+        }
+        if (::btnAccount.isInitialized) {
+            btnAccount.text = if (loggedIn) "Keluar" else "Masuk dengan YouTube"
+        }
+    }
+
+    @Deprecated("startActivityForResult klasik")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQ_LOGIN && resultCode == Activity.RESULT_OK) {
+            vm.refreshAccountState()
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -230,22 +289,7 @@ class MainActivity : Activity() {
             setBackgroundColor(BG)
         }
 
-        // Segmented nav: Zeni | Home | Cari | Podcast | Playlist | Log
-        val segWrap = vcol { setPadding(dp(16), dp(14), dp(16), dp(8)) }
-        val segBar = hrow {
-            background = roundedBg(SURFACE2, dp(20).toFloat())
-            setPadding(dp(4), dp(4), dp(4), dp(4))
-        }
-        val segNames = listOf("Zeni", "Home", "Cari", "Podcast", "Playlist", "Log")
-        segmentButtons = segNames.mapIndexed { i, n ->
-            button(n, 12f).also { styleSegment(it, i == 1) }
-        }
-        segmentButtons.forEachIndexed { i, b ->
-            segBar.add(b, 0, dp(40), 1f)
-            b.setOnClickListener { selectSegment(i) }
-        }
-        segWrap.addView(segBar, matchWrap())
-        root.addView(segWrap, matchWrap())
+        // Navigasi sekarang di BAWAH (ikon saja) — lihat navBar di akhir buildUi.
 
         // Konten — bisa digeser kiri/kanan untuk pindah tab
         val content = FrameLayout(this@MainActivity)
@@ -321,7 +365,45 @@ class MainActivity : Activity() {
         miniWrap.addView(miniPlayer, matchWrap())
         root.addView(miniWrap, matchWrap())
 
+        // Navigasi bawah: ikon saja (Zenicat, Home, Cari, Podcast, Playlist, Log)
+        val navBar = hrow {
+            background = ColorDrawable(SURFACE)
+            setPadding(dp(6), dp(6), dp(6), dp(8))
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        navButtons = navKinds.mapIndexed { i, kind ->
+            iconAction(kind, if (i == 1) ACCENT1 else TEXT2, 46, 11).also { iv ->
+                iv.setOnClickListener { selectSegment(i) }
+            }
+        }
+        navButtons.forEach { iv ->
+            val slot = FrameLayout(this@MainActivity)
+            iv.background = if (navButtons.indexOf(iv) == 1) {
+                roundedBg(SURFACE2, dp(16).toFloat())
+            } else {
+                ColorDrawable(0x00000000)
+            }
+            slot.addView(iv, FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.CENTER))
+            navBar.addView(slot, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        }
+        root.addView(navBar, matchWrap())
+
         setContentView(root)
+    }
+
+    /** Segarkan tampilan ikon navigasi bawah sesuai tab aktif. */
+    private fun refreshNav() = with(UiKit) {
+        if (!::navButtons.isInitialized) return@with
+        navButtons.forEachIndexed { i, iv ->
+            val active = i == currentSegment
+            iv.setImageDrawable(ZeniIcons.drawable(
+                this@MainActivity, navKinds[i], if (active) ACCENT1 else TEXT2))
+            iv.background = if (active) roundedBg(SURFACE2, dp(16).toFloat())
+                else ColorDrawable(0x00000000)
+        }
     }
 
     // ================= Halaman Zeni =================
@@ -431,6 +513,23 @@ class MainActivity : Activity() {
         setCard.addView(cfRow, matchWrap())
         col.addView(setCard, matchWrap().apply { bottomMargin = dp(12) })
 
+        // Akun YouTube (login ala YMusic)
+        val accCard = vcol {
+            background = cardBg()
+            setPadding(dp(16), dp(14), dp(16), dp(14))
+        }
+        accCard.addView(textView("Akun YouTube", 15f, TEXT, bold = true).apply {
+            setPadding(0, 0, 0, dp(4))
+        }, matchWrap())
+        tvAccountState = textView("Belum masuk", 12f, TEXT2)
+        accCard.addView(tvAccountState, matchWrap().apply { bottomMargin = dp(10) })
+        btnAccount = accentPillButton("Masuk dengan YouTube", 13f).apply {
+            setPadding(dp(18), dp(10), dp(18), dp(10))
+        }
+        btnAccount.setOnClickListener { onAccountButton() }
+        accCard.addView(btnAccount, matchWrap())
+        col.addView(accCard, matchWrap().apply { bottomMargin = dp(12) })
+
         // Menu WhatsApp
         val waRow = hrow {
             background = cardBg()
@@ -441,7 +540,7 @@ class MainActivity : Activity() {
         waRow.addView(iconAction(ZeniIcons.Kind.CHAT, ACCENT1, 40, 8))
         val waCol = vcol { setPadding(dp(12), 0, dp(8), 0) }
         waCol.addView(textView("WhatsApp", 15f, TEXT, bold = true), matchWrap())
-        waCol.addView(textView("Chat untuk update & info terbaru", 12f, TEXT2), matchWrap())
+        waCol.addView(textView("Saluran update & info terbaru", 12f, TEXT2), matchWrap())
         waRow.add(waCol, 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         waRow.addView(iconAction(ZeniIcons.Kind.CHEVRON_RIGHT, TEXT2, 28, 6))
         waRow.setOnClickListener { openWhatsApp() }
@@ -493,8 +592,7 @@ class MainActivity : Activity() {
 
     private fun openWhatsApp() {
         try {
-            startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(
-                "https://wa.me/$WHATSAPP_NUMBER?text=$WHATSAPP_TEXT")))
+            startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(WHATSAPP_CHANNEL)))
         } catch (_: Exception) {
             Toast.makeText(this, "Tidak bisa membuka WhatsApp", Toast.LENGTH_SHORT).show()
         }
@@ -824,6 +922,26 @@ class MainActivity : Activity() {
         discoveryWrap.addView(daylistWrap, matchWrap())
         refreshDaylistCard()
 
+        // ---- Flow: campuran personal tanpa henti (favorit + riwayat) ----
+        val flowWrap = vcol { setPadding(dp(12), dp(4), dp(12), dp(4)) }
+        val flowCard = hrow {
+            background = cardBg()
+            setPadding(dp(16), dp(12), dp(16), dp(12))
+            gravity = Gravity.CENTER_VERTICAL
+            isClickable = true
+            isFocusable = true
+        }
+        val flowTxt = vcol {}
+        flowTxt.addView(textView("🌊 Flow", 15f, TEXT, bold = true), matchWrap())
+        tvFlowSub = textView("Campuran personal dari favorit & riwayatmu", 12f, TEXT2)
+        flowTxt.addView(tvFlowSub, matchWrap())
+        flowCard.add(flowTxt, 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        val flowPlay = iconAction(ZeniIcons.Kind.PLAY, ACCENT2, 44, 10)
+        flowCard.addView(flowPlay)
+        flowCard.setOnClickListener { openFlow() }
+        flowWrap.addView(flowCard, matchWrap())
+        discoveryWrap.addView(flowWrap, matchWrap())
+
         // ---- Samples: swipe discovery ala TikTok ----
         val samplesWrap = vcol { setPadding(dp(12), dp(4), dp(12), dp(4)) }
         val samplesCard = hrow {
@@ -1146,6 +1264,29 @@ class MainActivity : Activity() {
         }
     }
 
+    /** Tap kartu Flow → buat campuran personal lalu putar (diteruskan rekomendasi saat stok menipis). */
+    private fun openFlow() {
+        flowJob?.cancel()
+        tvFlowSub.text = "Membuat Flow untukmu…"
+        flowJob = uiScope.launch {
+            try {
+                val tracks = vm.flow()
+                if (tracks.isEmpty()) {
+                    vm.showToast("Flow kosong, coba lagi.")
+                    return@launch
+                }
+                // radioMode=false: daftar Flow diputar berurutan; PlayerManager
+                // menyambung rekomendasi terkait saat stok menipis → terasa tanpa henti.
+                vm.play(tracks.first(), tracks, radioMode = false)
+                vm.showToast("Flow siap — selamat mendengarkan!")
+            } catch (e: Exception) {
+                vm.showToast("Gagal membuat Flow.")
+            } finally {
+                tvFlowSub.text = "Campuran personal dari favorit & riwayatmu"
+            }
+        }
+    }
+
     // ================= Zeni Wrapped =================
 
     private fun openWrapped() {
@@ -1448,11 +1589,11 @@ class MainActivity : Activity() {
             maxLines = 1; ellipsize = TextUtils.TruncateAt.END
             setPadding(dp(12), 0, dp(12), 0)
         }
-        val btnDelete = iconAction(ZeniIcons.Kind.TRASH, ERROR, 40, 9)
-        btnDelete.setOnClickListener { confirmDeletePlaylist() }
+        btnDeletePlaylist = iconAction(ZeniIcons.Kind.TRASH, ERROR, 40, 9)
+        btnDeletePlaylist.setOnClickListener { confirmDeletePlaylist() }
         detailRow.addView(btnBack)
         detailRow.add(tvDetailTitle, 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-        detailRow.addView(btnDelete)
+        detailRow.addView(btnDeletePlaylist)
         actionRow.addView(detailRow, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         pane.addView(actionRow, matchWrap())
@@ -1818,7 +1959,6 @@ class MainActivity : Activity() {
 
     private fun selectSegment(idx: Int) = with(UiKit) {
         val safeIdx = idx.coerceIn(0, 5)
-        segmentButtons.forEachIndexed { i, b -> styleSegment(b, i == safeIdx) }
         val panes = listOf(zeniPane, homePane, cariPane, podcastPane, libraryPane, logPane)
         val dir = when {
             safeIdx > currentSegment -> 1
@@ -1826,6 +1966,7 @@ class MainActivity : Activity() {
             else -> 0
         }
         currentSegment = safeIdx
+        refreshNav()
         panes.forEachIndexed { i, pane ->
             if (i == safeIdx) {
                 val wasGone = pane.visibility != View.VISIBLE
@@ -1907,16 +2048,25 @@ class MainActivity : Activity() {
         openPlaylistId = null
         openPlaylistName = null
         playlistSongsJob?.cancel()
+        openAccountPlaylistId = null
+        openAccountPlaylistTitle = null
+        accountJob?.cancel()
         subTabButtons.forEachIndexed { i, b -> styleTab(b, i == idx) }
         renderLibrary()
     }
 
     private fun renderLibrary() = with(UiKit) {
         val inDetail = openPlaylistId != null
-        btnNewPlaylist.visibility = if (!inDetail && libTab == 0) View.VISIBLE else View.GONE
-        detailRow.visibility = if (inDetail) View.VISIBLE else View.GONE
+        val inAccountDetail = openAccountPlaylistId != null
+        btnNewPlaylist.visibility =
+            if (!inDetail && !inAccountDetail && libTab == 0) View.VISIBLE else View.GONE
+        detailRow.visibility = if (inDetail || inAccountDetail) View.VISIBLE else View.GONE
+        if (::btnDeletePlaylist.isInitialized) {
+            btnDeletePlaylist.visibility = if (inDetail) View.VISIBLE else View.GONE
+        }
         tvLibEmpty.text = when {
             inDetail -> "Playlist ini masih kosong"
+            inAccountDetail -> "Memuat / playlist akun ini masih kosong"
             libTab == 0 -> "Belum ada playlist \u2014 buat satu yuk!"
             libTab == 1 -> "Belum ada lagu favorit"
             libTab == 2 -> "Belum ada riwayat putar"
@@ -1928,11 +2078,37 @@ class MainActivity : Activity() {
                 openPlaylistId?.let { pid -> vm.removeFromPlaylist(pid, t) }
             }
             libTrackAdapter.onDownloadHandler = null
+            // Playlist lokal: baris bisa diseret untuk mengubah urutan.
+            libTrackAdapter.dragMode = true
+            libTrackAdapter.onDragHandleTouch = { pos, row, ev -> onPlaylistRowDrag(pos, row, ev) }
             libTrackAdapter.submit(playlistSongs)
+            if (lvLibrary.adapter !== libTrackAdapter) lvLibrary.adapter = libTrackAdapter
+        } else if (inAccountDetail) {
+            tvDetailTitle.text = openAccountPlaylistTitle ?: ""
+            libTrackAdapter.onRemoveHandler = null
+            libTrackAdapter.onDownloadHandler = { t -> vm.download(t) }
+            libTrackAdapter.dragMode = false
+            libTrackAdapter.onDragHandleTouch = null
+            libTrackAdapter.submit(accountSongs)
             if (lvLibrary.adapter !== libTrackAdapter) lvLibrary.adapter = libTrackAdapter
         } else if (libTab == 0) {
             if (lvLibrary.adapter !== playlistAdapter) lvLibrary.adapter = playlistAdapter
-            playlistAdapter.submit(playlists)
+            val rows = mutableListOf<LibRow>()
+            if (vm.accountLoggedIn.value) {
+                rows.add(LibRow("Lagu yang Disukai • YouTube") {
+                    openAccountPlaylist("LM", "Lagu yang Disukai")
+                })
+                for (ap in accountPlaylists) {
+                    val suffix = if (ap.countText.isNotEmpty()) " • ${ap.countText}" else ""
+                    rows.add(LibRow("${ap.title} • YouTube$suffix") {
+                        openAccountPlaylist(ap.id, ap.title)
+                    })
+                }
+            }
+            for (p in playlists) {
+                rows.add(LibRow(p.name) { openPlaylistDetail(p) })
+            }
+            playlistAdapter.submit(rows)
         } else {
             val list = when (libTab) {
                 1 -> favTracks
@@ -1941,9 +2117,50 @@ class MainActivity : Activity() {
             }
             libTrackAdapter.onRemoveHandler = null
             libTrackAdapter.onDownloadHandler = { t -> vm.download(t) }
+            libTrackAdapter.dragMode = false
+            libTrackAdapter.onDragHandleTouch = null
             libTrackAdapter.submit(list)
             if (lvLibrary.adapter !== libTrackAdapter) lvLibrary.adapter = libTrackAdapter
         }
+    }
+
+    /**
+     * Seret baris pada detail playlist: baris melayang mengikuti jari; saat
+     * dilepas, urutan baru diterapkan ke adapter dan disimpan ke database.
+     */
+    private fun onPlaylistRowDrag(position: Int, row: View, ev: android.view.MotionEvent): Boolean {
+        when (ev.actionMasked) {
+            android.view.MotionEvent.ACTION_DOWN -> {
+                dragStartPos = position
+                dragDownRawY = ev.rawY
+                lvLibrary.requestDisallowInterceptTouchEvent(true)
+                row.alpha = 0.92f
+                row.elevation = 10f
+            }
+            android.view.MotionEvent.ACTION_MOVE -> {
+                row.translationY = ev.rawY - dragDownRawY
+            }
+            android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL -> {
+                val items = libTrackAdapter.items.toMutableList()
+                val h = row.height.coerceAtLeast(1)
+                val steps = Math.round(row.translationY / h.toFloat())
+                val from = dragStartPos
+                val to = (from + steps).coerceIn(0, (items.size - 1).coerceAtLeast(0))
+                row.translationY = 0f
+                row.alpha = 1f
+                row.elevation = 0f
+                lvLibrary.requestDisallowInterceptTouchEvent(false)
+                dragStartPos = -1
+                if (from in items.indices && to != from) {
+                    val item = items.removeAt(from)
+                    items.add(to, item)
+                    playlistSongs = items
+                    libTrackAdapter.submit(items)
+                    openPlaylistId?.let { pid -> vm.reorderPlaylist(pid, items) }
+                }
+            }
+        }
+        return true
     }
 
     private fun openPlaylistDetail(p: PlaylistEntity) {
@@ -1963,7 +2180,51 @@ class MainActivity : Activity() {
         openPlaylistId = null
         openPlaylistName = null
         playlistSongsJob?.cancel()
+        openAccountPlaylistId = null
+        openAccountPlaylistTitle = null
+        accountJob?.cancel()
         renderLibrary()
+    }
+
+    /** Buka isi playlist akun YouTube (atau "LM" = lagu yang disukai). */
+    private fun openAccountPlaylist(id: String, title: String) {
+        openPlaylistId = null
+        openAccountPlaylistId = id
+        openAccountPlaylistTitle = title
+        accountSongs = emptyList()
+        renderLibrary()
+        accountJob?.cancel()
+        accountJob = uiScope.launch {
+            try {
+                val tracks = vm.accountTracks(id)
+                if (openAccountPlaylistId == id) {
+                    accountSongs = tracks
+                    renderLibrary()
+                    if (tracks.isEmpty()) vm.showToast("Playlist ini kosong / gagal dimuat")
+                }
+            } catch (e: Exception) {
+                if (openAccountPlaylistId == id) {
+                    vm.showToast("Gagal memuat: ${e.message}")
+                }
+            }
+        }
+    }
+
+    /** Muat daftar playlist akun (setelah login / saat aplikasi dibuka). */
+    private fun loadAccountPlaylists() {
+        if (!vm.accountLoggedIn.value) {
+            accountPlaylists = emptyList()
+            renderLibrary()
+            return
+        }
+        uiScope.launch {
+            try {
+                accountPlaylists = vm.accountPlaylists()
+            } catch (e: Exception) {
+                accountPlaylists = emptyList()
+            }
+            renderLibrary()
+        }
     }
 
     // ================= Dialogs =================
@@ -2087,10 +2348,31 @@ class MainActivity : Activity() {
             }
         }
         uiScope.launch {
+            vm.downloadProgress.collect { prog ->
+                searchAdapter.downloadProgress = prog
+                libTrackAdapter.downloadProgress = prog
+                searchAdapter.notifyDataSetChanged()
+                libTrackAdapter.notifyDataSetChanged()
+                if (::podcastAdapter.isInitialized) {
+                    podcastAdapter.downloadProgress = prog
+                    podcastAdapter.notifyDataSetChanged()
+                }
+            }
+        }
+        uiScope.launch {
             vm.toast.collect { msg ->
                 msg?.let {
                     Toast.makeText(this@MainActivity, it, Toast.LENGTH_SHORT).show()
                     vm.consumeToast()
+                }
+            }
+        }
+        uiScope.launch {
+            vm.accountLoggedIn.collect { loggedIn ->
+                refreshAccountCard()
+                if (loggedIn) loadAccountPlaylists() else {
+                    accountPlaylists = emptyList()
+                    if (openAccountPlaylistId != null) closePlaylistDetail() else renderLibrary()
                 }
             }
         }
@@ -2193,14 +2475,17 @@ class MainActivity : Activity() {
     }
 
     // ---- Adapter daftar playlist (card) ----
+    /** Satu baris pada daftar playlist: judul + aksi saat diketuk (lokal/akun). */
+    private data class LibRow(val title: String, val onClick: () -> Unit)
+
     private inner class PlaylistAdapter : BaseAdapter() {
-        private var items: List<PlaylistEntity> = emptyList()
-        fun submit(list: List<PlaylistEntity>) { items = list; notifyDataSetChanged() }
+        private var items: List<LibRow> = emptyList()
+        fun submit(list: List<LibRow>) { items = list; notifyDataSetChanged() }
         override fun getCount(): Int = items.size
-        override fun getItem(p: Int): PlaylistEntity = items[p]
-        override fun getItemId(p: Int): Long = items[p].id
+        override fun getItem(p: Int): LibRow = items[p]
+        override fun getItemId(p: Int): Long = p.toLong()
         override fun getView(position: Int, convertView: View?, parent: ViewGroup): View = with(UiKit) {
-            val p = items[position]
+            val row = items[position]
             val root: LinearLayout
             val tv: TextView
             if (convertView is LinearLayout && convertView.tag is TextView) {
@@ -2219,8 +2504,8 @@ class MainActivity : Activity() {
                 root.addView(tv, matchWrap())
                 root.tag = tv
             }
-            tv.text = p.name
-            tv.setOnClickListener { openPlaylistDetail(p) }
+            tv.text = row.title
+            tv.setOnClickListener { row.onClick() }
             root
         }
     }

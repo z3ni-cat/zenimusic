@@ -21,7 +21,8 @@ object ZeniIcons {
         DOWNLOAD, PLUS, CLOSE, TRASH,
         SEARCH, HOME, PLAYLIST, INFO, CHAT,
         CHEVRON_RIGHT, CHEVRON_LEFT,
-        SHUFFLE, REPEAT, LYRICS, QUEUE, EQ, TIMER
+        SHUFFLE, REPEAT, LYRICS, QUEUE, EQ, TIMER,
+        CAT, MIC, LOG, DRAG
     }
 
     private const val S = 96f
@@ -211,6 +212,47 @@ object ZeniIcons {
                 c.drawLine(48f, 50f, 48f, 36f, stroke)
                 c.drawLine(48f, 50f, 60f, 56f, stroke)
                 c.drawCircle(48f, 50f, 3.5f, fill)
+            }
+            Kind.CAT -> {
+                // Kucing (maskot Zenicat): telinga segitiga + kepala bulat + mata + kumis.
+                val earL = Path().apply {
+                    moveTo(29f, 42f); lineTo(35f, 17f); lineTo(53f, 30f); close()
+                }
+                val earR = Path().apply {
+                    moveTo(67f, 42f); lineTo(61f, 17f); lineTo(43f, 30f); close()
+                }
+                c.drawPath(earL, fillRound)
+                c.drawPath(earR, fillRound)
+                c.drawCircle(48f, 55f, 24f, stroke)
+                c.drawCircle(40f, 52f, 3.2f, fill)
+                c.drawCircle(56f, 52f, 3.2f, fill)
+                c.drawLine(16f, 56f, 28f, 54f, stroke)   // kumis kiri
+                c.drawLine(17f, 66f, 29f, 62f, stroke)
+                c.drawLine(80f, 56f, 68f, 54f, stroke)   // kumis kanan
+                c.drawLine(79f, 66f, 67f, 62f, stroke)
+            }
+            Kind.MIC -> {
+                // Mikrofon: kapsul + lengkung penyangga + kaki.
+                c.drawRoundRect(38f, 14f, 58f, 56f, 10f, 10f, stroke)
+                val cradle = RectF(27f, 32f, 69f, 74f)
+                c.drawArc(cradle, 0f, 180f, false, stroke)
+                c.drawLine(48f, 74f, 48f, 82f, stroke)
+                c.drawLine(33f, 84f, 63f, 84f, stroke)
+            }
+            Kind.LOG -> {
+                // Berkas catatan: halaman + garis-garis isi.
+                c.drawRoundRect(28f, 17f, 68f, 79f, 8f, 8f, stroke)
+                c.drawLine(37f, 36f, 59f, 36f, stroke)
+                c.drawLine(37f, 48f, 59f, 48f, stroke)
+                c.drawLine(37f, 60f, 52f, 60f, stroke)
+            }
+            Kind.DRAG -> {
+                // Pegangan seret: 6 titik (2 kolom x 3 baris).
+                for (x in floatArrayOf(40f, 56f)) {
+                    for (y in floatArrayOf(32f, 48f, 64f)) {
+                        c.drawCircle(x, y, 4f, fill)
+                    }
+                }
             }
         }
         return BitmapDrawable(ctx.resources, bmp)

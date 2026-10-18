@@ -39,6 +39,12 @@ class TrackAdapter(
     var items: List<Track> = emptyList()
     var favIds: Set<String> = emptySet()
     var downloadingIds: Set<String> = emptySet()
+    /** Persentase unduhan berjalan per videoId — ditampilkan sebagai bar + teks. */
+    var downloadProgress: Map<String, Int> = emptyMap()
+    /** Mode seret: tampilkan pegangan ≡ di tiap baris (untuk urutan playlist). */
+    var dragMode: Boolean = false
+    /** Sentuhan pada pegangan seret diteruskan ke pemilik daftar (posisi, baris, event). */
+    var onDragHandleTouch: ((Int, View, android.view.MotionEvent) -> Boolean)? = null
 
     fun submit(list: List<Track>) {
         // Tandai untuk animasi stagger hanya jika isi list benar-benar berganti
@@ -60,7 +66,9 @@ class TrackAdapter(
         val btnFav: ImageView,
         val btnDl: ImageView,
         val btnAdd: ImageView,
-        val btnRemove: ImageView
+        val btnRemove: ImageView,
+        val bar: android.widget.ProgressBar,
+        val btnDrag: ImageView
     )
 
     override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
@@ -113,24 +121,43 @@ class TrackAdapter(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             col.addView(sub, LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            val bar = android.widget.ProgressBar(ctx, null,
+                android.R.attr.progressBarStyleHorizontal).apply {
+                max = 100
+                visibility = View.GONE
+                progressTintList = android.content.res.ColorStateList.valueOf(ACCENT2)
+                progressBackgroundTintList = android.content.res.ColorStateList.valueOf(SURFACE2)
+            }
+            col.addView(bar, LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ctx.dp(4)).apply { topMargin = ctx.dp(6) })
             card.addView(col, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
             val btnFav = with(ctx) { circleIconButton(ZeniIcons.Kind.HEART, ACCENT2, 36) }
             val btnDl = with(ctx) { circleIconButton(ZeniIcons.Kind.DOWNLOAD, TEXT, 36) }
             val btnAdd = with(ctx) { circleIconButton(ZeniIcons.Kind.PLUS, TEXT, 36) }
             val btnRemove = with(ctx) { circleIconButton(ZeniIcons.Kind.CLOSE, TEXT, 36) }
+            val btnDrag = with(ctx) { circleIconButton(ZeniIcons.Kind.DRAG, TEXT2, 36) }
             card.addView(btnFav)
             card.addView(btnDl)
             card.addView(btnAdd)
             card.addView(btnRemove)
+            card.addView(btnDrag)
             root.addView(card, LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-            h = Holder(thumb, title, sub, btnFav, btnDl, btnAdd, btnRemove)
+            h = Holder(thumb, title, sub, btnFav, btnDl, btnAdd, btnRemove, bar, btnDrag)
             root.tag = h
             card.setOnClickListener { onPlay(t) }
         }
 
         h.title.text = t.title
-        h.sub.text = "${t.channel} • ${formatDuration(t.durationSec)}"
+        val pct = downloadProgress[t.videoId]
+        if (pct != null) {
+            h.sub.text = "Mengunduh… $pct%"
+            h.bar.visibility = View.VISIBLE
+            h.bar.progress = pct
+        } else {
+            h.sub.text = "${t.channel} • ${formatDuration(t.durationSec)}"
+            h.bar.visibility = View.GONE
+        }
         ImageLoader.load(t.thumbnailUrl, h.thumb)
 
         val favActive = favIds.contains(t.videoId)
@@ -142,6 +169,16 @@ class TrackAdapter(
             alpha = if (downloading) 0.4f else 1f) { onDownloadHandler?.invoke(t) }
         bindAction(h.btnAdd, onAddToPlaylist, ZeniIcons.Kind.PLUS, TEXT) { onAddToPlaylist?.invoke(t) }
         bindAction(h.btnRemove, onRemoveHandler, ZeniIcons.Kind.CLOSE, TEXT) { onRemoveHandler?.invoke(t) }
+        // Pegangan seret (hanya tampil di mode seret, mis. detail playlist lokal)
+        if (dragMode && onDragHandleTouch != null) {
+            h.btnDrag.visibility = View.VISIBLE
+            h.btnDrag.setOnTouchListener { _, ev ->
+                onDragHandleTouch?.invoke(position, root, ev) ?: false
+            }
+        } else {
+            h.btnDrag.visibility = View.GONE
+            h.btnDrag.setOnTouchListener(null)
+        }
 
         // Update click listener karena view di-recycle.
         (root.getChildAt(0) as View).setOnClickListener { onPlay(t) }

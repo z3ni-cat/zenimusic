@@ -115,6 +115,81 @@ class YouTubeAccount(
         return "SAPISIDHASH ${ts}_$sha1"
     }
 
+    /**
+     * URL audio langsung dari sesi akun (v3.9.0, "jalur A"): minta data putar
+     * ke InnerTube player WEB_REMIX memakai cookie login, pilih format audio
+     * sesuai kualitas, kembalikan (url, kbps). Mengembalikan null bila tidak
+     * login / ditolak / semua format masih berkode tanda tangan (signatureCipher
+     * tidak bisa diurai di sini) — pemanggil lalu memakai jalur umum.
+     */
+    suspend fun accountAudioUrl(videoId: String, quality: String): Pair<String, Int>? =
+        withContext(Dispatchers.IO) {
+            try {
+                val cookieHeader = cookies() ?: return@withContext null
+                val clientVersion = "1.20251029.03.00"
+                val body = JSONObject().apply {
+                    put("context", JSONObject().apply {
+                        put("client", JSONObject().apply {
+                            put("clientName", "WEB_REMIX")
+                            put("clientVersion", clientVersion)
+                            put("hl", "en")
+                            put("gl", "US")
+                        })
+                    })
+                    put("videoId", videoId)
+                    put("playbackContext", JSONObject().apply {
+                        put("contentPlaybackContext", JSONObject().apply {
+                            put("signatureTimestamp", 20073)
+                        })
+                    })
+                    put("contentCheckOk", true)
+                    put("racyCheckOk", true)
+                }
+                val req = Request.Builder()
+                    .url("https://music.youtube.com/youtubei/v1/player" +
+                        "?key=<redacted>&prettyPrint=false")
+                    .post(body.toString().toRequestBody("application/json".toMediaType()))
+                    .header("Cookie", cookieHeader)
+                    .header("Authorization", authHeader(cookieHeader))
+                    .header("X-Goog-AuthUser", "0")
+                    .header("X-YouTube-Client-Name", "67")
+                    .header("X-YouTube-Client-Version", clientVersion)
+                    .header("Origin", "https://music.youtube.com")
+                    .header("Referer", "https://music.youtube.com/")
+                    .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
+                        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36")
+                    .build()
+                http.newCall(req).execute().use { resp ->
+                    if (!resp.isSuccessful) return@withContext null
+                    val text = resp.body?.string() ?: return@withContext null
+                    val json = JSONObject(text)
+                    val status = json.optJSONObject("playabilityStatus")
+                        ?.optString("status")
+                    if (status != "OK") return@withContext null
+                    val formats = json.optJSONObject("streamingData")
+                        ?.optJSONArray("adaptiveFormats") ?: return@withContext null
+                    val audios = mutableListOf<Pair<String, Int>>()
+                    for (i in 0 until formats.length()) {
+                        val f = formats.optJSONObject(i) ?: continue
+                        if (!f.optString("mimeType").startsWith("audio/")) continue
+                        val url = f.optString("url")
+                        if (url.isBlank()) continue // berkode tanda tangan -> lewati
+                        val kbps = (f.optInt("bitrate") / 1000).coerceAtLeast(1)
+                        audios.add(url to kbps)
+                    }
+                    if (audios.isEmpty()) return@withContext null
+                    when (quality) {
+                        "hemat" -> audios.minByOrNull { it.second }
+                        "sedang" -> audios.minByOrNull {
+                            kotlin.math.abs(it.second - 128) }
+                        else -> audios.maxByOrNull { it.second }
+                    }
+                }
+            } catch (e: Exception) {
+                null
+            }
+        }
+
     private suspend fun browse(browseId: String?, continuation: String?): JSONObject =
         withContext(Dispatchers.IO) {
             val cookieHeader = cookies() ?: throw IllegalStateException("Belum masuk")

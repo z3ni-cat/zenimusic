@@ -229,11 +229,18 @@ class MainActivity : Activity() {
     private lateinit var detailRow: LinearLayout
     private lateinit var tvDetailTitle: TextView
 
-    // ---- Mini player (slim minimalis, line-icon) ----
-    private lateinit var miniPlayer: LinearLayout
-    /** Bar melayang bawah (mini player + navigasi pil kaca) — v3.8.0. */
+    // ---- Mini player KAPSUL (v3.9.0: kaca buram asli + bisa diseret) ----
+    private lateinit var miniPlayer: FrameLayout
+    /** Bar melayang bawah (kapsul mini player + navigasi pil kaca). */
     private lateinit var floatBar: LinearLayout
     private lateinit var contentPane: FrameLayout
+    private lateinit var glassMini: com.zenimusic.app.ui.GlassStripView
+    private lateinit var glassNav: com.zenimusic.app.ui.GlassStripView
+    private var glassStripBmp: android.graphics.Bitmap? = null
+    private var glassDirty = true
+    private var glassLoopOn = false
+    private var glassIdleAt = 0L
+    private val paneScrollers = mutableListOf<View>()
     private lateinit var ivMiniCover: ImageView
     private var miniCoverId: String? = null
     private var lastNavActive = 1
@@ -427,7 +434,10 @@ class MainActivity : Activity() {
         contentPane = content
         root.addView(content, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-        content.setPadding(0, 0, 0, dp(88))
+        // v3.9.0: pane membentang sampai tepi bawah layar (di belakang kaca
+        // melayang) — ruang istirahat diatur per-scroller oleh updateContentPadding,
+        // agar isi yang bergeser di balik kapsul bisa diburamkan jadi kaca asli.
+        content.setPadding(0, 0, 0, 0)
         // Geser horizontal pada area konten → pindah tab
         content.setOnTouchListener(this@MainActivity.TabSwipeListener { direction -> selectSegment(currentSegment + direction) })
 
@@ -435,12 +445,19 @@ class MainActivity : Activity() {
         floatBar = vcol {
             setPadding(dp(12), 0, dp(12), dp(10))
         }
-        miniPlayer = hrow {
-            background = glassPillBg()
+        // KAPSUL mini player (v3.9.0): bingkai kaca buram asli + isi seperti biasa.
+        miniPlayer = FrameLayout(this@MainActivity).apply {
             elevation = dp(10).toFloat()
-            setPadding(dp(10), dp(8), dp(8), dp(8))
             visibility = View.GONE
-            pressedFeedback()
+        }
+        glassMini = com.zenimusic.app.ui.GlassStripView(this@MainActivity).apply {
+            cornerRadiusPx = dp(100).toFloat()
+            tintColor = 0x5C140F22
+        }
+        miniPlayer.addView(glassMini, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        val miniRow = hrow {
+            setPadding(dp(10), dp(8), dp(8), dp(8))
             gravity = Gravity.CENTER_VERTICAL
         }
         ivMiniCover = ImageView(this@MainActivity).apply {
@@ -448,8 +465,8 @@ class MainActivity : Activity() {
             setBackgroundColor(SURFACE2)
             roundedCorners(14)
         }
-        miniPlayer.addView(ivMiniCover, LinearLayout.LayoutParams(dp(44), dp(44)))
-        miniPlayer.addView(View(this@MainActivity),
+        miniRow.addView(ivMiniCover, LinearLayout.LayoutParams(dp(44), dp(44)))
+        miniRow.addView(View(this@MainActivity),
             LinearLayout.LayoutParams(dp(10), 1))
         val miniCol = vcol {
             gravity = Gravity.CENTER_VERTICAL
@@ -462,7 +479,7 @@ class MainActivity : Activity() {
         }
         miniCol.addView(tvMiniTitle, matchWrap())
         miniCol.addView(tvMiniChannel, matchWrap())
-        miniPlayer.add(miniCol, 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        miniRow.add(miniCol, 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         btnMiniPrev = iconAction(ZeniIcons.Kind.PREV, TEXT2, 40, 8)
         btnMiniPrev.setOnClickListener { PlayerManager.previous() }
         btnMiniPlay = iconAction(ZeniIcons.Kind.PLAY, TEXT, 40, 8)
@@ -478,25 +495,32 @@ class MainActivity : Activity() {
         }
         btnMiniNext = iconAction(ZeniIcons.Kind.NEXT, TEXT2, 40, 8)
         btnMiniNext.setOnClickListener { PlayerManager.next() }
-        miniPlayer.addView(btnMiniPrev)
-        miniPlayer.addView(btnMiniPlay)
-        miniPlayer.addView(miniSpinner, LinearLayout.LayoutParams(dp(40), dp(40)))
-        miniPlayer.addView(btnMiniNext)
-        miniPlayer.setOnClickListener {
-            // Buka pemutar dengan transisi membesar (animasi diatur PlayerActivity).
-            startActivity(Intent(this@MainActivity, PlayerActivity::class.java))
-            @Suppress("DEPRECATION")
-            overridePendingTransition(R.anim.act_open_enter, R.anim.act_open_exit)
-        }
+        miniRow.addView(btnMiniPrev)
+        miniRow.addView(btnMiniPlay)
+        miniRow.addView(miniSpinner, LinearLayout.LayoutParams(dp(40), dp(40)))
+        miniRow.addView(btnMiniNext)
+        miniPlayer.addView(miniRow, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        attachCapsuleGestures(miniRow)
         floatBar.addView(miniPlayer, matchWrap().apply { bottomMargin = dp(8) })
 
-        // Navigasi bawah pil kaca: ikon saja (Zenicat, Home, Cari, Podcast, Playlist, Log)
-        val navBar = hrow {
-            background = glassPillBg()
+        // Navigasi bawah pil kaca buram asli: ikon saja
+        // (Zenicat, Home, Cari, Podcast, Playlist, Log)
+        val navBar = FrameLayout(this@MainActivity).apply {
             elevation = dp(10).toFloat()
+        }
+        glassNav = com.zenimusic.app.ui.GlassStripView(this@MainActivity).apply {
+            cornerRadiusPx = dp(100).toFloat()
+            tintColor = 0x5C140F22
+        }
+        navBar.addView(glassNav, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        val navRow = hrow {
             setPadding(dp(6), dp(6), dp(6), dp(6))
             gravity = Gravity.CENTER_VERTICAL
         }
+        navBar.addView(navRow, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         navButtons = navKinds.mapIndexed { i, kind ->
             iconAction(kind, if (i == 1) ACCENT1 else TEXT2, 46, 11).also { iv ->
                 iv.setOnClickListener { selectSegment(i) }
@@ -513,7 +537,7 @@ class MainActivity : Activity() {
                 ViewGroup.LayoutParams.WRAP_CONTENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT,
                 Gravity.CENTER))
-            navBar.addView(slot, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            navRow.addView(slot, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         }
         floatBar.addView(navBar, matchWrap())
         root.addView(floatBar, FrameLayout.LayoutParams(
@@ -522,16 +546,218 @@ class MainActivity : Activity() {
             Gravity.BOTTOM))
 
         setContentView(root)
+        hookGlassScrollers()
         updateContentPadding()
     }
 
-    /** Sesuaikan padding bawah konten dengan tinggi bar melayang saat ini. */
+    /**
+     * Ruang istirahat bawah untuk scroller pane: pane kini membentang di
+     * belakang kaca melayang, jadi padding diberikan ke scroller-nya langsung
+     * (dengan clipToPadding mati agar isi tetap mengalir di balik kaca saat
+     * digeser — itulah yang diburamkan menjadi frosted glass).
+     */
     private fun updateContentPadding() {
         if (!::floatBar.isInitialized || !::contentPane.isInitialized) return
         floatBar.post {
             if (!::floatBar.isInitialized) return@post
             val h = floatBar.height
-            if (h > 0) with(UiKit) { contentPane.setPadding(0, 0, 0, h + dp(8)) }
+            if (h > 0) {
+                val clearance = h + with(UiKit) { dp(10) }
+                for (sc in paneScrollers) {
+                    try {
+                        if (sc is ViewGroup) sc.clipToPadding = false
+                        if (sc.paddingBottom != clearance) {
+                            sc.setPadding(
+                                sc.paddingLeft, sc.paddingTop,
+                                sc.paddingRight, clearance)
+                        }
+                    } catch (e: Exception) { /* abaikan */ }
+                }
+                markGlassDirty()
+            }
+        }
+    }
+
+    /** Daftarkan semua scroller di pane untuk padding kaca + pemicu blur. */
+    private fun hookGlassScrollers() {
+        paneScrollers.clear()
+        fun walk(v: View) {
+            when (v) {
+                is android.widget.ScrollView -> {
+                    paneScrollers.add(v)
+                    v.setOnScrollChangeListener { _, _, _, _, _ -> markGlassDirty() }
+                }
+                is android.widget.AbsListView -> {
+                    paneScrollers.add(v)
+                    v.setOnScrollListener(object : android.widget.AbsListView.OnScrollListener {
+                        override fun onScrollStateChanged(view: android.widget.AbsListView?, state: Int) {
+                            markGlassDirty()
+                        }
+                        override fun onScroll(
+                            view: android.widget.AbsListView?, first: Int,
+                            count: Int, total: Int
+                        ) { markGlassDirty() }
+                    })
+                }
+            }
+            if (v is ViewGroup) {
+                for (i in 0 until v.childCount) walk(v.getChildAt(i))
+            }
+        }
+        walk(contentPane)
+    }
+
+    private val glassCb = object : android.view.Choreographer.FrameCallback {
+        override fun doFrame(frameTimeNanos: Long) {
+            if (glassDirty) {
+                glassDirty = false
+                refreshGlassStrip()
+            }
+            if (android.os.SystemClock.uptimeMillis() < glassIdleAt) {
+                android.view.Choreographer.getInstance().postFrameCallback(this)
+            } else {
+                glassLoopOn = false
+            }
+        }
+    }
+
+    /** Tandai kaca perlu ditangkap ulang (isi di belakangnya berubah/bergerak). */
+    private fun markGlassDirty() {
+        glassDirty = true
+        glassIdleAt = android.os.SystemClock.uptimeMillis() + 900
+        if (!glassLoopOn) {
+            glassLoopOn = true
+            android.view.Choreographer.getInstance().postFrameCallback(glassCb)
+        }
+    }
+
+    /**
+     * Tangkap potongan bawah layar dari isi pane (tanpa bar melayang),
+     * perkecil + buramkan, lalu pasang ke kedua panel kaca. Biaya kecil:
+     * bitmap hasil perkecilan hanya ±270×60 piksel.
+     */
+    private fun refreshGlassStrip() {
+        if (!::floatBar.isInitialized || !::glassMini.isInitialized) return
+        try {
+            val root = floatBar.parent as? View ?: return
+            val rw = root.width
+            val rh = root.height
+            if (rw == 0 || rh == 0) return
+            val stripH = floatBar.height + with(UiKit) { dp(26) }
+            if (stripH <= 0) return
+            val s = 0.22f
+            val bw = (rw * s).toInt().coerceAtLeast(2)
+            val bh = (stripH * s).toInt().coerceAtLeast(2)
+            val raw = android.graphics.Bitmap.createBitmap(
+                bw, bh, android.graphics.Bitmap.Config.ARGB_8888)
+            val canvas = android.graphics.Canvas(raw)
+            canvas.scale(s, s)
+            canvas.translate(0f, -(rh - stripH).toFloat())
+            canvas.clipRect(0, rh - stripH, rw, rh)
+            val vis = floatBar.visibility
+            floatBar.visibility = View.INVISIBLE
+            root.draw(canvas)
+            floatBar.visibility = vis
+            val blurred = with(UiKit) { boxBlur(raw, 9, 2) }
+            if (blurred !== raw) raw.recycle()
+            val loc = IntArray(2)
+            root.getLocationInWindow(loc)
+            val old = glassStripBmp
+            glassStripBmp = blurred
+            glassMini.setStrip(blurred, s, rh - stripH, loc[0], loc[1])
+            if (::glassNav.isInitialized) {
+                glassNav.setStrip(blurred, s, rh - stripH, loc[0], loc[1])
+            }
+            if (old != null && old !== blurred && !old.isRecycled) old.recycle()
+        } catch (e: Exception) { /* kaca gagal -> panel tampil polos */ }
+    }
+
+    /** Buka pemutar besar dari kapsul (transisi membesar v3.8.0). */
+    private fun openPlayerFromCapsule() {
+        startActivity(Intent(this@MainActivity, PlayerActivity::class.java))
+        @Suppress("DEPRECATION")
+        overridePendingTransition(R.anim.act_open_enter, R.anim.act_open_exit)
+    }
+
+    /** Kembalikan kapsul ke posisi dok dengan pegas fisika. */
+    private fun settleCapsule() = with(UiKit) {
+        miniPlayer.springTo(UiKit.SpringProp.TRANSLATION_X, 0f, 320f, 0.78f)
+        miniPlayer.springTo(UiKit.SpringProp.TRANSLATION_Y, 0f, 320f, 0.78f)
+        miniPlayer.springTo(UiKit.SpringProp.SCALE, 1f, 320f, 0.78f)
+    }
+
+    /**
+     * Gestur kapsul (desain Khalid, v3.9.0): seret ke ATAS membuka pemutar
+     * (kapsul mengikuti jari & membesar sedikit), seret ke SAMPING ganti lagu,
+     * ketuk biasa tetap membuka pemutar. Tombol di dalam kapsul tidak ikut —
+     * mereka menerima sentuhannya sendiri lebih dulu.
+     */
+    private fun attachCapsuleGestures(row: View) {
+        var downX = 0f
+        var downY = 0f
+        var mode = 0 // 0 belum pasti, 1 vertikal, 2 horizontal
+        var dragged = false
+        row.setOnTouchListener { _, ev ->
+            when (ev.actionMasked) {
+                android.view.MotionEvent.ACTION_DOWN -> {
+                    downX = ev.rawX; downY = ev.rawY
+                    mode = 0; dragged = false
+                    with(UiKit) {
+                        miniPlayer.springCancel(UiKit.SpringProp.TRANSLATION_X)
+                        miniPlayer.springCancel(UiKit.SpringProp.TRANSLATION_Y)
+                        miniPlayer.springCancel(UiKit.SpringProp.SCALE)
+                    }
+                    true
+                }
+                android.view.MotionEvent.ACTION_MOVE -> {
+                    val dx = ev.rawX - downX
+                    val dy = ev.rawY - downY
+                    with(UiKit) {
+                        if (mode == 0 &&
+                            (kotlin.math.abs(dx) > dp(10) || kotlin.math.abs(dy) > dp(10))) {
+                            mode = if (kotlin.math.abs(dy) >= kotlin.math.abs(dx)) 1 else 2
+                        }
+                        if (mode == 1) {
+                            dragged = true
+                            val minTy = -(miniPlayer.height * 1.7f)
+                            miniPlayer.translationY =
+                                dy.coerceIn(minTy, dp(26).toFloat())
+                            val p = (-miniPlayer.translationY / dp(170))
+                                .coerceIn(0f, 1f)
+                            val s = 1f + p * 0.05f
+                            miniPlayer.scaleX = s
+                            miniPlayer.scaleY = s
+                        } else if (mode == 2) {
+                            dragged = true
+                            miniPlayer.translationX = dx * 0.45f
+                        }
+                    }
+                    true
+                }
+                android.view.MotionEvent.ACTION_UP,
+                android.view.MotionEvent.ACTION_CANCEL -> {
+                    val dx = ev.rawX - downX
+                    val dy = ev.rawY - downY
+                    with(UiKit) {
+                        when {
+                            mode == 1 && dy < -dp(88) -> {
+                                openPlayerFromCapsule()
+                                settleCapsule()
+                            }
+                            mode == 2 && kotlin.math.abs(dx) > dp(54) -> {
+                                if (dx < 0) PlayerManager.next()
+                                else PlayerManager.previous()
+                                settleCapsule()
+                            }
+                            !dragged -> openPlayerFromCapsule()
+                            else -> settleCapsule()
+                        }
+                    }
+                    mode = 0; dragged = false
+                    true
+                }
+                else -> false
+            }
         }
     }
 
@@ -2351,6 +2577,7 @@ class MainActivity : Activity() {
         }
         currentSegment = safeIdx
         refreshNav()
+        markGlassDirty()
         if (safeIdx == 0) refreshBlockedInfo()
         if (safeIdx == 1) {
             // Masuk Home: segarkan kedua seksi rekomendasi (urutan diacak).

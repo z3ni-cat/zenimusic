@@ -10,6 +10,7 @@ import android.graphics.drawable.LayerDrawable
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.MotionEvent
+import android.view.Choreographer
 import android.view.View
 import android.view.ViewGroup
 import android.view.ViewOutlineProvider
@@ -356,8 +357,184 @@ object UiKit {
         window?.setBackgroundDrawable(
             context.glassBg(20, 245)
         )
+        // Kaca buram ASLI di belakang dialog (Android 12+): isi layar di balik
+        // jendela diburamkan sistem. Bila perangkat tidak mendukung, lewati.
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= 31) {
+                val w = window
+                if (w != null) {
+                    val lp = w.attributes
+                    lp.flags = lp.flags or
+                        android.view.WindowManager.LayoutParams.FLAG_BLUR_BEHIND
+                    lp.blurBehindRadius = context.dp(28)
+                    lp.dimAmount = 0.45f
+                    w.attributes = lp
+                    w.addFlags(android.view.WindowManager.LayoutParams.FLAG_DIM_BEHIND)
+                }
+            }
+        } catch (e: Exception) { /* abaikan */ }
         // Muncul memegas lembut (sistem gerak v3.8.0).
         try { window?.decorView?.springIn(300) } catch (e: Exception) { /* abaikan */ }
+    }
+
+    // ================= Pegas fisika (v3.9.0) =================
+    // Integrator pegas sungguhan (gaya pegas + redaman diintegrasikan per
+    // frame), bukan kurva interpolasi: gerakan bisa menyambung mulus dari
+    // kecepatan saat ini meski target berubah di tengah jalan — kunci rasa
+    // "hidup" pada seretan kapsul & pemutar.
+
+    enum class SpringProp { TRANSLATION_X, TRANSLATION_Y, SCALE, ALPHA }
+
+    private class SpringState(
+        var value: Float, var velocity: Float = 0f, var target: Float,
+        var stiffness: Float, var dampingRatio: Float
+    )
+
+    private val springStates = java.util.Collections.synchronizedMap(
+        java.util.WeakHashMap<View, MutableMap<SpringProp, SpringState>>()
+    )
+    @Volatile private var springLoopRunning = false
+
+    private val springCallback = object : Choreographer.FrameCallback {
+        override fun doFrame(frameTimeNanos: Long) {
+            stepSprings()
+            val more = synchronized(springStates) { springStates.isNotEmpty() }
+            if (more) {
+                Choreographer.getInstance().postFrameCallback(this)
+            } else {
+                springLoopRunning = false
+            }
+        }
+    }
+
+    private fun propGet(v: View, p: SpringProp): Float = when (p) {
+        SpringProp.TRANSLATION_X -> v.translationX
+        SpringProp.TRANSLATION_Y -> v.translationY
+        SpringProp.SCALE -> v.scaleX
+        SpringProp.ALPHA -> v.alpha
+    }
+
+    private fun propSet(v: View, p: SpringProp, x: Float) {
+        when (p) {
+            SpringProp.TRANSLATION_X -> v.translationX = x
+            SpringProp.TRANSLATION_Y -> v.translationY = x
+            SpringProp.SCALE -> { v.scaleX = x; v.scaleY = x }
+            SpringProp.ALPHA -> v.alpha = x
+        }
+    }
+
+    private fun stepSprings() {
+        val dt = 1f / 60f
+        synchronized(springStates) {
+            val it = springStates.entries.iterator()
+            while (it.hasNext()) {
+                val (view, props) = it.next()
+                val pit = props.entries.iterator()
+                while (pit.hasNext()) {
+                    val (prop, st) = pit.next()
+                    val c = 2f * st.dampingRatio * kotlin.math.sqrt(st.stiffness)
+                    val force = -st.stiffness * (st.value - st.target) - c * st.velocity
+                    st.velocity += force * dt
+                    st.value += st.velocity * dt
+                    val trans = prop == SpringProp.TRANSLATION_X ||
+                        prop == SpringProp.TRANSLATION_Y
+                    val eps = if (trans) 0.5f else 0.003f
+                    val vEps = if (trans) 8f else 0.05f
+                    if (kotlin.math.abs(st.value - st.target) < eps &&
+                        kotlin.math.abs(st.velocity) < vEps) {
+                        propSet(view, prop, st.target)
+                        pit.remove()
+                    } else {
+                        propSet(view, prop, st.value)
+                    }
+                }
+                if (props.isEmpty()) it.remove()
+            }
+        }
+    }
+
+    /** Gerakkan properti menuju target memakai pegas fisika (menyambung halus). */
+    fun View.springTo(
+        prop: SpringProp, target: Float,
+        stiffness: Float = 260f, dampingRatio: Float = 0.82f
+    ) {
+        val start = try { propGet(this, prop) } catch (e: Exception) { target }
+        synchronized(springStates) {
+            val map = springStates.getOrPut(this) { mutableMapOf() }
+            val st = map.getOrPut(prop) {
+                SpringState(start, 0f, target, stiffness, dampingRatio)
+            }
+            st.target = target
+            st.stiffness = stiffness
+            st.dampingRatio = dampingRatio
+        }
+        if (!springLoopRunning) {
+            springLoopRunning = true
+            Choreographer.getInstance().postFrameCallback(springCallback)
+        }
+    }
+
+    /** Hentikan pegas pada satu properti (posisi dibiarkan apa adanya). */
+    fun View.springCancel(prop: SpringProp) {
+        synchronized(springStates) { springStates[this]?.remove(prop) }
+    }
+
+    /** Blur kotak sederhana (untuk bitmap kecil hasil tangkapan kaca). */
+    fun boxBlur(src: android.graphics.Bitmap, radius: Int, passes: Int = 2):
+        android.graphics.Bitmap {
+        val w = src.width
+        val h = src.height
+        if (w < 2 || h < 2 || radius < 1) return src
+        var a = IntArray(w * h)
+        var b = IntArray(w * h)
+        src.getPixels(a, 0, w, 0, 0, w, h)
+        val n = 2 * radius + 1
+        fun channel(c: Int, shift: Int) = (c shr shift) and 0xFF
+        repeat(passes) {
+            // Horizontal: a -> b
+            for (y in 0 until h) {
+                val off = y * w
+                var aA = 0; var aR = 0; var aG = 0; var aB = 0
+                for (x in -radius..radius) {
+                    val c = a[off + x.coerceIn(0, w - 1)]
+                    aA += c ushr 24; aR += channel(c, 16)
+                    aG += channel(c, 8); aB += channel(c, 0)
+                }
+                for (x in 0 until w) {
+                    b[off + x] = ((aA / n) shl 24) or ((aR / n) shl 16) or
+                        ((aG / n) shl 8) or (aB / n)
+                    val co = a[off + (x - radius).coerceIn(0, w - 1)]
+                    val ci = a[off + (x + radius + 1).coerceIn(0, w - 1)]
+                    aA += (ci ushr 24) - (co ushr 24)
+                    aR += channel(ci, 16) - channel(co, 16)
+                    aG += channel(ci, 8) - channel(co, 8)
+                    aB += channel(ci, 0) - channel(co, 0)
+                }
+            }
+            // Vertikal: b -> a
+            for (x in 0 until w) {
+                var aA = 0; var aR = 0; var aG = 0; var aB = 0
+                for (y in -radius..radius) {
+                    val c = b[y.coerceIn(0, h - 1) * w + x]
+                    aA += c ushr 24; aR += channel(c, 16)
+                    aG += channel(c, 8); aB += channel(c, 0)
+                }
+                for (y in 0 until h) {
+                    a[y * w + x] = ((aA / n) shl 24) or ((aR / n) shl 16) or
+                        ((aG / n) shl 8) or (aB / n)
+                    val co = b[(y - radius).coerceIn(0, h - 1) * w + x]
+                    val ci = b[(y + radius + 1).coerceIn(0, h - 1) * w + x]
+                    aA += (ci ushr 24) - (co ushr 24)
+                    aR += channel(ci, 16) - channel(co, 16)
+                    aG += channel(ci, 8) - channel(co, 8)
+                    aB += channel(ci, 0) - channel(co, 0)
+                }
+            }
+        }
+        val out = android.graphics.Bitmap.createBitmap(w, h,
+            android.graphics.Bitmap.Config.ARGB_8888)
+        out.setPixels(a, 0, w, 0, 0, w, h)
+        return out
     }
 
     /** Ambil drawable id logo; 0 bila tidak ada. */
@@ -467,5 +644,106 @@ object UiKit {
                 .setStartDelay(i * delayEach)
                 .setDuration(duration).setInterpolator(easeOut).start()
         }
+    }
+}
+
+/**
+ * Panel kaca buram ASLI (v3.9.0): menggambar potongan gambar buram dari isi
+ * layar yang berada tepat di belakang panel ini (ditangkap dari pohon view
+ * oleh pemanggil), lalu dilapisi warna gelap tipis + garis tepi terang —
+ * frosted glass seperti Telegram/iOS, tanpa library Compose.
+ *
+ * Pemanggil memasok bitmap strip bawah layar yang sudah diburamkan lewat
+ * [setStrip] beserta geometri tangkapannya; view ini menyelaraskan potongan
+ * yang digambar dengan posisi nyatanya di jendela.
+ */
+class GlassStripView(context: android.content.Context) : View(context) {
+
+    private var strip: android.graphics.Bitmap? = null
+    private var stripScale: Float = 0.22f
+    private var stripLocalTop: Int = 0
+    private var rootLocX: Int = 0
+    private var rootLocY: Int = 0
+
+    /** Radius sudut (px) untuk klip pil/kartu. */
+    var cornerRadiusPx: Float = 0f
+        set(value) { field = value; rebuildPath() }
+
+    /** Warna lapisan di atas blur (gelap tembus pandang). */
+    var tintColor: Int = 0x66120E20
+
+    private val clipPath = android.graphics.Path()
+    private val bmpPaint = android.graphics.Paint(
+        android.graphics.Paint.ANTI_ALIAS_FLAG or android.graphics.Paint.FILTER_BITMAP_FLAG
+    )
+    private val tintPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+        style = android.graphics.Paint.Style.FILL
+    }
+    private val strokePaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+        style = android.graphics.Paint.Style.STROKE
+        color = 0x30FFFFFF
+    }
+
+    fun setStrip(
+        bmp: android.graphics.Bitmap?, scale: Float, localTop: Int,
+        rootX: Int, rootY: Int
+    ) {
+        strip = bmp
+        stripScale = scale
+        stripLocalTop = localTop
+        rootLocX = rootX
+        rootLocY = rootY
+        invalidate()
+    }
+
+    private fun rebuildPath() {
+        clipPath.reset()
+        if (width > 0 && height > 0) {
+            clipPath.addRoundRect(
+                0f, 0f, width.toFloat(), height.toFloat(),
+                cornerRadiusPx, cornerRadiusPx,
+                android.graphics.Path.Direction.CW
+            )
+        }
+    }
+
+    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+        super.onSizeChanged(w, h, oldw, oldh)
+        strokePaint.strokeWidth = (h * 0.016f).coerceIn(1f, 2.5f)
+        rebuildPath()
+    }
+
+    override fun onDraw(canvas: android.graphics.Canvas) {
+        val bmp = strip
+        if (width == 0 || height == 0) return
+        if (bmp == null || bmp.isRecycled) {
+            // Belum ada tangkapan: tampilkan kaca polos tembus pandang.
+            canvas.save()
+            canvas.clipPath(clipPath)
+            tintPaint.color = 0xD81E1A2B.toInt()
+            canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), tintPaint)
+            canvas.restore()
+            canvas.drawPath(clipPath, strokePaint)
+            return
+        }
+        val loc = IntArray(2)
+        getLocationInWindow(loc)
+        canvas.save()
+        canvas.clipPath(clipPath)
+        // Selaraskan bitmap strip (koordinat jendela -> lokal view ini).
+        canvas.translate(
+            -(loc[0] - rootLocX).toFloat(),
+            -(loc[1] - rootLocY - stripLocalTop).toFloat()
+        )
+        canvas.scale(1f / stripScale, 1f / stripScale)
+        canvas.drawBitmap(bmp, 0f, 0f, bmpPaint)
+        canvas.restore()
+        // Lapisan gelap + garis tepi.
+        canvas.save()
+        canvas.clipPath(clipPath)
+        tintPaint.color = tintColor
+        canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), tintPaint)
+        canvas.restore()
+        canvas.drawPath(clipPath, strokePaint)
     }
 }

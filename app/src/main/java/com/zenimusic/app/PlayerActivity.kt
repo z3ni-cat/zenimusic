@@ -93,6 +93,7 @@ class PlayerActivity : Activity() {
 
     // Overlay lirik ala Apple Music
     private lateinit var lyricsOverlay: FrameLayout
+    private lateinit var playerRoot: FrameLayout
     private lateinit var lyricsScroll: ScrollView
     private lateinit var lyricsBox: LinearLayout
     private lateinit var tvLyricsTitle: TextView
@@ -378,14 +379,37 @@ class PlayerActivity : Activity() {
             }
         }
         playerUi.addView(ivArt, artLp)
-        // Geser sampul: kiri = lagu berikutnya, kanan = sebelumnya.
-        // Ketukan biasa membuka lirik.
+        // Gestur sampul (v3.9.0): geser kiri/kanan = ganti lagu; tarik ke
+        // BAWAH = pemutar mengecil kembali jadi kapsul; ketuk = lirik.
         var artDownX = 0f
         var artDownY = 0f
+        var artMode = 0 // 0 belum pasti, 1 geser samping, 2 tarik bawah
         ivArt.setOnTouchListener { v, ev ->
             when (ev.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
-                    artDownX = ev.x; artDownY = ev.y; true
+                    artDownX = ev.x; artDownY = ev.y; artMode = 0
+                    if (::playerRoot.isInitialized) {
+                        playerRoot.springCancel(UiKit.SpringProp.TRANSLATION_Y)
+                        playerRoot.springCancel(UiKit.SpringProp.SCALE)
+                    }
+                    true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val dx = ev.x - artDownX
+                    val dy = ev.y - artDownY
+                    if (artMode == 0 &&
+                        (kotlin.math.abs(dx) > dp(10) || kotlin.math.abs(dy) > dp(10))) {
+                        artMode = if (dy > dp(10) && dy > kotlin.math.abs(dx) * 1.25f) 2 else 1
+                    }
+                    if (artMode == 2 && ::playerRoot.isInitialized) {
+                        val ty = (dy * 0.85f).coerceAtLeast(0f)
+                        playerRoot.translationY = ty
+                        val h = if (playerRoot.height > 0) playerRoot.height else 1
+                        val sc = 1f - (ty / h) * 0.07f
+                        playerRoot.scaleX = sc
+                        playerRoot.scaleY = sc
+                    }
+                    true
                 }
                 MotionEvent.ACTION_UP -> {
                     val dx = ev.x - artDownX
@@ -393,6 +417,14 @@ class PlayerActivity : Activity() {
                     val adx = kotlin.math.abs(dx)
                     val ady = kotlin.math.abs(dy)
                     when {
+                        artMode == 2 && ::playerRoot.isInitialized -> {
+                            if (playerRoot.translationY > dp(110)) {
+                                finish()
+                            } else {
+                                playerRoot.springTo(UiKit.SpringProp.TRANSLATION_Y, 0f, 300f, 0.8f)
+                                playerRoot.springTo(UiKit.SpringProp.SCALE, 1f, 300f, 0.8f)
+                            }
+                        }
                         adx > dp(48) && adx > ady * 1.5f -> {
                             if (dx < 0) PlayerManager.next() else PlayerManager.previous()
                             val dir = if (dx < 0) -1f else 1f
@@ -403,9 +435,17 @@ class PlayerActivity : Activity() {
                         }
                         adx < dp(14) && ady < dp(14) -> openLyrics()
                     }
+                    artMode = 0
                     true
                 }
-                MotionEvent.ACTION_CANCEL -> true
+                MotionEvent.ACTION_CANCEL -> {
+                    if (::playerRoot.isInitialized) {
+                        playerRoot.springTo(UiKit.SpringProp.TRANSLATION_Y, 0f, 300f, 0.8f)
+                        playerRoot.springTo(UiKit.SpringProp.SCALE, 1f, 300f, 0.8f)
+                    }
+                    artMode = 0
+                    true
+                }
                 else -> true
             }
         }
@@ -579,6 +619,7 @@ class PlayerActivity : Activity() {
             )
         }
         val root = FrameLayout(this@PlayerActivity).apply {
+            playerRoot = this
             setBackgroundColor(BG)
             addView(bgA, FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
@@ -1384,6 +1425,59 @@ class PlayerActivity : Activity() {
         colorAnim.start()
     }
 
+    // ---- Sorot per kata (v3.9.0) ----
+    private var lyricWordLine = -1
+    private var lyricWordIdx = -1
+
+    /**
+     * Lirik menyala PER KATA ala Apple Music: durasi baris aktif dibagi ke
+     * kata-katanya menurut panjang kata; kata yang sudah dinyanyikan terang,
+     * kata yang sedang dinyanyikan berwarna aksen + tebal, sisanya redup.
+     */
+    private fun updateLyricWords(pos: Long) {
+        val idx = lyricIndex
+        val line = lyricLines.getOrNull(idx) ?: return
+        val tv = lyricViews.getOrNull(idx) ?: return
+        val start = line.timeMs
+        val nextStart = lyricLines.getOrNull(idx + 1)?.timeMs ?: (start + 5000L)
+        val lineDur = (nextStart - start).coerceIn(1L, 8000L)
+        val words = line.text.split(' ').filter { it.isNotEmpty() }
+        if (words.isEmpty()) return
+        val totalWeight = words.sumOf { it.length + 1 }.toLong().coerceAtLeast(1L)
+        var acc = 0L
+        var activeWord = words.size
+        for (i in words.indices) {
+            val wDur = lineDur * (words[i].length + 1) / totalWeight
+            if (pos < start + acc + wDur) { activeWord = i; break }
+            acc += wDur
+        }
+        if (idx == lyricWordLine && activeWord == lyricWordIdx) return
+        lyricWordLine = idx
+        lyricWordIdx = activeWord
+        val sb = android.text.SpannableString(line.text)
+        var off = 0
+        for (i in words.indices) {
+            val wStart = line.text.indexOf(words[i], off)
+            if (wStart < 0) break
+            val wEnd = wStart + words[i].length
+            val color = when {
+                i < activeWord -> UiKit.TEXT
+                i == activeWord -> UiKit.ACCENT2
+                else -> 0xFF7E7891.toInt()
+            }
+            sb.setSpan(
+                android.text.style.ForegroundColorSpan(color),
+                wStart, wEnd, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            if (i == activeWord) {
+                sb.setSpan(
+                    android.text.style.StyleSpan(android.graphics.Typeface.BOLD),
+                    wStart, wEnd, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            }
+            off = wEnd
+        }
+        tv.text = sb
+    }
+
     /** Sorot baris aktif sesuai posisi putar; scroll agar di tengah. */
     private fun updateLyricHighlight(fromTap: Boolean) {
         val pos = if (fromTap) {
@@ -1398,15 +1492,21 @@ class PlayerActivity : Activity() {
             // Batalkan animasi yang masih berjalan, lalu transisikan dengan halus.
             lyricAnimators.forEach { it.cancel() }
             lyricAnimators.clear()
-            // redupkan yang lama
+            // redupkan yang lama + kembalikan teksnya polos (buang sorot kata)
             if (lyricIndex in lyricViews.indices) {
                 animateLyricLine(lyricViews[lyricIndex], activate = false)
+                lyricLines.getOrNull(lyricIndex)?.let {
+                    lyricViews[lyricIndex].text = it.text
+                }
             }
+            lyricWordLine = -1
+            lyricWordIdx = -1
             lyricIndex = idx
             val v = lyricViews.getOrNull(idx) ?: return
             animateLyricLine(v, activate = true)
             applyLyricDimming(idx)
         }
+        updateLyricWords(pos)
         chaseLyricCenter(fromTap)
     }
 

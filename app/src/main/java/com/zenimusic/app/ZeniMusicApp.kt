@@ -93,6 +93,10 @@ class ZeniMusicApp : Application() {
             // Cache lirik offline di folder files aplikasi.
             com.zenimusic.app.data.repo.LyricsRepository.cacheDir = File(filesDir, "lyrics-cache")
             account = YouTubeAccount(this, http)
+            // Jalur putar akun (v3.9.0): repo mencoba sesi login dulu.
+            repository.accountAudioProvider = { videoId, quality ->
+                account.accountAudioUrl(videoId, quality)
+            }
 
             PlayerManager.init(this, repository)
             // Equalizer: siapkan prefs (attach ke session dilakukan di attachPlayer)

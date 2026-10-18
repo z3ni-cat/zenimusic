@@ -91,11 +91,29 @@ class MusicRepository(
     /** Pilihan kualitas dari pengaturan: "hemat" | "sedang" | "tinggi". */
     var audioQualityProvider: () -> String = { "tinggi" }
 
+    /**
+     * Jalur akun (v3.9.0): penyedia URL audio dari sesi login YouTube
+     * (diisi ZeniMusicApp). null / hasil null = pakai jalur umum NewPipe.
+     */
+    var accountAudioProvider: (suspend (String, String) -> Pair<String, Int>?)? = null
+
     /** Bitrate (kbps) stream yang terakhir dipilih — untuk label di pemutar. */
     @Volatile var lastBitrateKbps: Int = 0
         private set
 
     suspend fun resolveAudioUrl(videoId: String): String = withContext(Dispatchers.IO) {
+        // Jalur akun dulu (bila login): link putar dari sesi YouTube pengguna.
+        // Gagal/ditolak -> diam-diam lanjut ke jalur umum di bawah.
+        try {
+            val provider = accountAudioProvider
+            if (provider != null) {
+                val got = provider(videoId, audioQualityProvider())
+                if (got != null) {
+                    lastBitrateKbps = got.second
+                    return@withContext got.first
+                }
+            }
+        } catch (e: Exception) { /* abaikan, pakai jalur umum */ }
         val info = StreamInfo.getInfo(service, "https://www.youtube.com/watch?v=$videoId")
         val streams = info.audioStreams.filter { !it.url.isNullOrEmpty() }
         if (streams.isEmpty()) throw IllegalStateException("Tidak ada audio stream untuk video ini")
